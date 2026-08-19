@@ -129,6 +129,14 @@ func initSecretManager() error {
 //	vault      – HashiCorp Vault (KV v2)
 //	gcp        – GCP Secret Manager
 //	azure_kv   – Azure Key Vault
+//
+// maintainerd-secret is intentionally NOT a provider here. Core — like Agent and
+// Docker — is a SEED service: it runs at first boot, before maintainerd-secret
+// has been provisioned, so it cannot depend on it (bootstrap chicken-and-egg).
+// Seed services get secrets from env (default) or an external store
+// (AWS/GCP/Vault/Azure/file). maintainerd-secret is an option only for services
+// provisioned AFTER the seed (Auth, Database, ...), handled in the shared secret
+// SDK those services import — never in a seed service.
 func newSecretManager() (SecretManager, error) {
 	switch SecretProvider {
 	case "env":
