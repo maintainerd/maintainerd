@@ -22,6 +22,7 @@ func NewHandler(svc *Service) *Handler { return &Handler{svc: svc} }
 func (h *Handler) Routes() chi.Router {
 	r := chi.NewRouter()
 	r.Get("/", h.list)
+	r.Get("/system", h.listSystem)
 	r.Post("/", h.create)
 	r.Get("/{uuid}", h.get)
 	r.Patch("/{uuid}", h.updateStatus)
@@ -33,6 +34,7 @@ type createRequest struct {
 	TenantUUID uuid.UUID      `json:"tenant_uuid"`
 	Name       string         `json:"name"`
 	Kind       string         `json:"kind"`
+	IsSystem   bool           `json:"is_system"`
 	Endpoint   string         `json:"endpoint"`
 	Version    string         `json:"version"`
 	Metadata   map[string]any `json:"metadata"`
@@ -48,6 +50,7 @@ func (h *Handler) create(w http.ResponseWriter, r *http.Request) {
 		TenantUUID: req.TenantUUID,
 		Name:       req.Name,
 		Kind:       req.Kind,
+		IsSystem:   req.IsSystem,
 		Endpoint:   req.Endpoint,
 		Version:    req.Version,
 		Metadata:   req.Metadata,
@@ -88,6 +91,16 @@ func (h *Handler) list(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	response.Success(w, map[string]any{"items": items, "total": total}, "")
+}
+
+// listSystem returns the platform's system services (undeletable, always-on).
+func (h *Handler) listSystem(w http.ResponseWriter, r *http.Request) {
+	items, err := h.svc.ListSystem(r.Context())
+	if err != nil {
+		response.HandleServiceError(w, r, "Failed to list system services", err)
+		return
+	}
+	response.Success(w, map[string]any{"items": items}, "")
 }
 
 type updateStatusRequest struct {

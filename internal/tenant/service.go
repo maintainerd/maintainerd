@@ -155,7 +155,30 @@ func (s *Service) Update(ctx context.Context, id uuid.UUID, in UpdateInput) (*Te
 }
 
 func (s *Service) Delete(ctx context.Context, id uuid.UUID) error {
+	current, err := s.q.GetTenantByUUID(ctx, id)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return apperror.NewNotFound("tenant")
+	}
+	if err != nil {
+		return err
+	}
+	// The system (root) tenant is required for the platform to run — it cannot be removed.
+	if current.IsSystem {
+		return apperror.NewForbidden("the system tenant is required by the platform and cannot be removed")
+	}
 	return s.q.SoftDeleteTenant(ctx, id)
+}
+
+// GetSystem returns the platform's root (system) tenant.
+func (s *Service) GetSystem(ctx context.Context) (*Tenant, error) {
+	row, err := s.q.GetSystemTenant(ctx)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, apperror.NewNotFound("system tenant")
+	}
+	if err != nil {
+		return nil, err
+	}
+	return ptrTenant(row), nil
 }
 
 // --- mapping helpers ---

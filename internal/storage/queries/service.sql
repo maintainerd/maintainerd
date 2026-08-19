@@ -1,7 +1,13 @@
 -- name: CreateService :one
-INSERT INTO services (tenant_id, name, kind, status, endpoint, version, metadata, registered_at)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+INSERT INTO services (tenant_id, name, kind, status, endpoint, version, metadata, registered_at, is_system)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
 RETURNING *;
+
+-- name: ListSystemServices :many
+-- The platform's system services — the ones Core must keep running at all times.
+SELECT * FROM services
+WHERE is_system = TRUE AND deleted_at IS NULL
+ORDER BY kind ASC;
 
 -- name: GetServiceByID :one
 SELECT * FROM services

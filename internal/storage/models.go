@@ -101,6 +101,7 @@ type Service struct {
 	CreatedAt    time.Time          `json:"created_at"`
 	UpdatedAt    time.Time          `json:"updated_at"`
 	DeletedAt    pgtype.Timestamptz `json:"deleted_at"`
+	IsSystem     bool               `json:"is_system"`
 }
 
 type Tenant struct {

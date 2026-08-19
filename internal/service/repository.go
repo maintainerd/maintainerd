@@ -19,5 +19,6 @@ type Repository interface {
 	ListServicesByTenant(ctx context.Context, arg storage.ListServicesByTenantParams) ([]storage.Service, error)
 	CountServicesByTenant(ctx context.Context, tenantID int64) (int64, error)
 	UpdateServiceStatus(ctx context.Context, arg storage.UpdateServiceStatusParams) (storage.Service, error)
+	ListSystemServices(ctx context.Context) ([]storage.Service, error)
 	SoftDeleteService(ctx context.Context, serviceUUID uuid.UUID) error
 }

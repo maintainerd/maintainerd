@@ -36,6 +36,8 @@ type Querier interface {
 	GetServiceByID(ctx context.Context, serviceID int64) (Service, error)
 	GetServiceByTenantAndName(ctx context.Context, arg GetServiceByTenantAndNameParams) (Service, error)
 	GetServiceByUUID(ctx context.Context, serviceUuid uuid.UUID) (Service, error)
+	// The platform's root tenant — the single required system tenant.
+	GetSystemTenant(ctx context.Context) (Tenant, error)
 	GetTenantByID(ctx context.Context, tenantID int64) (Tenant, error)
 	GetTenantByName(ctx context.Context, name string) (Tenant, error)
 	GetTenantByUUID(ctx context.Context, tenantUuid uuid.UUID) (Tenant, error)
@@ -48,6 +50,8 @@ type Querier interface {
 	ListResourcesByProject(ctx context.Context, arg ListResourcesByProjectParams) ([]Resource, error)
 	ListResourcesByTenant(ctx context.Context, arg ListResourcesByTenantParams) ([]Resource, error)
 	ListServicesByTenant(ctx context.Context, arg ListServicesByTenantParams) ([]Service, error)
+	// The platform's system services — the ones Core must keep running at all times.
+	ListSystemServices(ctx context.Context) ([]Service, error)
 	ListTenants(ctx context.Context, arg ListTenantsParams) ([]Tenant, error)
 	SoftDeleteAgent(ctx context.Context, agentUuid uuid.UUID) error
 	SoftDeleteProject(ctx context.Context, projectUuid uuid.UUID) error

@@ -17,5 +17,6 @@ type Repository interface {
 	ListTenants(ctx context.Context, arg storage.ListTenantsParams) ([]storage.Tenant, error)
 	CountTenants(ctx context.Context) (int64, error)
 	UpdateTenant(ctx context.Context, arg storage.UpdateTenantParams) (storage.Tenant, error)
+	GetSystemTenant(ctx context.Context) (storage.Tenant, error)
 	SoftDeleteTenant(ctx context.Context, tenantUUID uuid.UUID) error
 }

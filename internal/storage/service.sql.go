@@ -25,9 +25,9 @@ func (q *Queries) CountServicesByTenant(ctx context.Context, tenantID int64) (in
 }
 
 const createService = `-- name: CreateService :one
-INSERT INTO services (tenant_id, name, kind, status, endpoint, version, metadata, registered_at)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-RETURNING service_id, service_uuid, tenant_id, name, kind, status, endpoint, version, metadata, registered_at, created_by, updated_by, created_at, updated_at, deleted_at
+INSERT INTO services (tenant_id, name, kind, status, endpoint, version, metadata, registered_at, is_system)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+RETURNING service_id, service_uuid, tenant_id, name, kind, status, endpoint, version, metadata, registered_at, created_by, updated_by, created_at, updated_at, deleted_at, is_system
 `
 
 type CreateServiceParams struct {
@@ -39,6 +39,7 @@ type CreateServiceParams struct {
 	Version      string             `json:"version"`
 	Metadata     []byte             `json:"metadata"`
 	RegisteredAt pgtype.Timestamptz `json:"registered_at"`
+	IsSystem     bool               `json:"is_system"`
 }
 
 func (q *Queries) CreateService(ctx context.Context, arg CreateServiceParams) (Service, error) {
@@ -51,6 +52,7 @@ func (q *Queries) CreateService(ctx context.Context, arg CreateServiceParams) (S
 		arg.Version,
 		arg.Metadata,
 		arg.RegisteredAt,
+		arg.IsSystem,
 	)
 	var i Service
 	err := row.Scan(
@@ -69,12 +71,13 @@ func (q *Queries) CreateService(ctx context.Context, arg CreateServiceParams) (S
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.DeletedAt,
+		&i.IsSystem,
 	)
 	return i, err
 }
 
 const getServiceByID = `-- name: GetServiceByID :one
-SELECT service_id, service_uuid, tenant_id, name, kind, status, endpoint, version, metadata, registered_at, created_by, updated_by, created_at, updated_at, deleted_at FROM services
+SELECT service_id, service_uuid, tenant_id, name, kind, status, endpoint, version, metadata, registered_at, created_by, updated_by, created_at, updated_at, deleted_at, is_system FROM services
 WHERE service_id = $1 AND deleted_at IS NULL
 `
 
@@ -97,12 +100,13 @@ func (q *Queries) GetServiceByID(ctx context.Context, serviceID int64) (Service,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.DeletedAt,
+		&i.IsSystem,
 	)
 	return i, err
 }
 
 const getServiceByTenantAndName = `-- name: GetServiceByTenantAndName :one
-SELECT service_id, service_uuid, tenant_id, name, kind, status, endpoint, version, metadata, registered_at, created_by, updated_by, created_at, updated_at, deleted_at FROM services
+SELECT service_id, service_uuid, tenant_id, name, kind, status, endpoint, version, metadata, registered_at, created_by, updated_by, created_at, updated_at, deleted_at, is_system FROM services
 WHERE tenant_id = $1 AND name = $2 AND deleted_at IS NULL
 `
 
@@ -130,12 +134,13 @@ func (q *Queries) GetServiceByTenantAndName(ctx context.Context, arg GetServiceB
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.DeletedAt,
+		&i.IsSystem,
 	)
 	return i, err
 }
 
 const getServiceByUUID = `-- name: GetServiceByUUID :one
-SELECT service_id, service_uuid, tenant_id, name, kind, status, endpoint, version, metadata, registered_at, created_by, updated_by, created_at, updated_at, deleted_at FROM services
+SELECT service_id, service_uuid, tenant_id, name, kind, status, endpoint, version, metadata, registered_at, created_by, updated_by, created_at, updated_at, deleted_at, is_system FROM services
 WHERE service_uuid = $1 AND deleted_at IS NULL
 `
 
@@ -158,12 +163,13 @@ func (q *Queries) GetServiceByUUID(ctx context.Context, serviceUuid uuid.UUID) (
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.DeletedAt,
+		&i.IsSystem,
 	)
 	return i, err
 }
 
 const listServicesByTenant = `-- name: ListServicesByTenant :many
-SELECT service_id, service_uuid, tenant_id, name, kind, status, endpoint, version, metadata, registered_at, created_by, updated_by, created_at, updated_at, deleted_at FROM services
+SELECT service_id, service_uuid, tenant_id, name, kind, status, endpoint, version, metadata, registered_at, created_by, updated_by, created_at, updated_at, deleted_at, is_system FROM services
 WHERE tenant_id = $1 AND deleted_at IS NULL
 ORDER BY created_at DESC
 LIMIT $2 OFFSET $3
@@ -200,6 +206,51 @@ func (q *Queries) ListServicesByTenant(ctx context.Context, arg ListServicesByTe
 			&i.CreatedAt,
 			&i.UpdatedAt,
 			&i.DeletedAt,
+			&i.IsSystem,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listSystemServices = `-- name: ListSystemServices :many
+SELECT service_id, service_uuid, tenant_id, name, kind, status, endpoint, version, metadata, registered_at, created_by, updated_by, created_at, updated_at, deleted_at, is_system FROM services
+WHERE is_system = TRUE AND deleted_at IS NULL
+ORDER BY kind ASC
+`
+
+// The platform's system services — the ones Core must keep running at all times.
+func (q *Queries) ListSystemServices(ctx context.Context) ([]Service, error) {
+	rows, err := q.db.Query(ctx, listSystemServices)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []Service{}
+	for rows.Next() {
+		var i Service
+		if err := rows.Scan(
+			&i.ServiceID,
+			&i.ServiceUuid,
+			&i.TenantID,
+			&i.Name,
+			&i.Kind,
+			&i.Status,
+			&i.Endpoint,
+			&i.Version,
+			&i.Metadata,
+			&i.RegisteredAt,
+			&i.CreatedBy,
+			&i.UpdatedBy,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.DeletedAt,
+			&i.IsSystem,
 		); err != nil {
 			return nil, err
 		}
@@ -229,7 +280,7 @@ SET status = $2,
     registered_at = $4,
     updated_at = now()
 WHERE service_uuid = $1 AND deleted_at IS NULL
-RETURNING service_id, service_uuid, tenant_id, name, kind, status, endpoint, version, metadata, registered_at, created_by, updated_by, created_at, updated_at, deleted_at
+RETURNING service_id, service_uuid, tenant_id, name, kind, status, endpoint, version, metadata, registered_at, created_by, updated_by, created_at, updated_at, deleted_at, is_system
 `
 
 type UpdateServiceStatusParams struct {
@@ -263,6 +314,7 @@ func (q *Queries) UpdateServiceStatus(ctx context.Context, arg UpdateServiceStat
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.DeletedAt,
+		&i.IsSystem,
 	)
 	return i, err
 }

@@ -35,6 +35,12 @@ SET display_name = $2,
 WHERE tenant_uuid = $1 AND deleted_at IS NULL
 RETURNING *;
 
+-- name: GetSystemTenant :one
+-- The platform's root tenant — the single required system tenant.
+SELECT * FROM tenants
+WHERE is_system = TRUE AND deleted_at IS NULL
+LIMIT 1;
+
 -- name: SoftDeleteTenant :exec
 UPDATE tenants
 SET deleted_at = now(), updated_at = now()

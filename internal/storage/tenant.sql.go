@@ -67,6 +67,34 @@ func (q *Queries) CreateTenant(ctx context.Context, arg CreateTenantParams) (Ten
 	return i, err
 }
 
+const getSystemTenant = `-- name: GetSystemTenant :one
+SELECT tenant_id, tenant_uuid, auth_tenant_uuid, name, display_name, status, is_system, metadata, created_by, updated_by, created_at, updated_at, deleted_at FROM tenants
+WHERE is_system = TRUE AND deleted_at IS NULL
+LIMIT 1
+`
+
+// The platform's root tenant — the single required system tenant.
+func (q *Queries) GetSystemTenant(ctx context.Context) (Tenant, error) {
+	row := q.db.QueryRow(ctx, getSystemTenant)
+	var i Tenant
+	err := row.Scan(
+		&i.TenantID,
+		&i.TenantUuid,
+		&i.AuthTenantUuid,
+		&i.Name,
+		&i.DisplayName,
+		&i.Status,
+		&i.IsSystem,
+		&i.Metadata,
+		&i.CreatedBy,
+		&i.UpdatedBy,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.DeletedAt,
+	)
+	return i, err
+}
+
 const getTenantByID = `-- name: GetTenantByID :one
 SELECT tenant_id, tenant_uuid, auth_tenant_uuid, name, display_name, status, is_system, metadata, created_by, updated_by, created_at, updated_at, deleted_at FROM tenants
 WHERE tenant_id = $1 AND deleted_at IS NULL

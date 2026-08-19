@@ -22,6 +22,7 @@ func NewHandler(svc *Service) *Handler { return &Handler{svc: svc} }
 func (h *Handler) Routes() chi.Router {
 	r := chi.NewRouter()
 	r.Get("/", h.list)
+	r.Get("/system", h.getSystem)
 	r.Post("/", h.create)
 	r.Get("/{uuid}", h.get)
 	r.Patch("/{uuid}", h.update)
@@ -82,6 +83,16 @@ func (h *Handler) list(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	response.Success(w, map[string]any{"items": items, "total": total}, "")
+}
+
+// getSystem returns the platform's root (system) tenant.
+func (h *Handler) getSystem(w http.ResponseWriter, r *http.Request) {
+	t, err := h.svc.GetSystem(r.Context())
+	if err != nil {
+		response.HandleServiceError(w, r, "Failed to fetch system tenant", err)
+		return
+	}
+	response.Success(w, t, "")
 }
 
 type updateRequest struct {

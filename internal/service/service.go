@@ -23,6 +23,7 @@ type Registration struct {
 	TenantUUID   uuid.UUID      `json:"tenant_uuid"`
 	Name         string         `json:"name"`
 	Kind         string         `json:"kind"`
+	IsSystem     bool           `json:"is_system"`
 	Status       string         `json:"status"`
 	Endpoint     string         `json:"endpoint"`
 	Version      string         `json:"version"`
@@ -43,6 +44,7 @@ type CreateInput struct {
 	TenantUUID uuid.UUID
 	Name       string
 	Kind       string
+	IsSystem   bool
 	Endpoint   string
 	Version    string
 	Metadata   map[string]any
@@ -77,6 +79,7 @@ func (s *Service) Create(ctx context.Context, in CreateInput) (*Registration, er
 		Version:      in.Version,
 		Metadata:     meta,
 		RegisteredAt: pgtype.Timestamptz{},
+		IsSystem:     in.IsSystem,
 	})
 	if err != nil {
 		return nil, err
@@ -169,7 +172,37 @@ func (s *Service) UpdateStatus(ctx context.Context, id uuid.UUID, in UpdateStatu
 }
 
 func (s *Service) Delete(ctx context.Context, id uuid.UUID) error {
+	row, err := s.q.GetServiceByUUID(ctx, id)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return apperror.NewNotFound("service")
+	}
+	if err != nil {
+		return err
+	}
+	// System services are required for the platform to run — Core refuses to
+	// remove them (and keeps them alive; see the reconciler).
+	if row.IsSystem {
+		return apperror.NewForbidden("system services are required by the platform and cannot be removed")
+	}
 	return s.q.SoftDeleteService(ctx, id)
+}
+
+// ListSystem returns the platform's system services — the ones Core must keep
+// running at all times. The keep-alive reconciler consumes this feed.
+func (s *Service) ListSystem(ctx context.Context) ([]Registration, error) {
+	rows, err := s.q.ListSystemServices(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]Registration, 0, len(rows))
+	for _, r := range rows {
+		tenantUUID, err := s.resolveTenantUUID(ctx, r.TenantID)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, regFrom(r, tenantUUID))
+	}
+	return out, nil
 }
 
 func (s *Service) resolveTenantUUID(ctx context.Context, tenantID int64) (uuid.UUID, error) {
@@ -188,6 +221,7 @@ func regFrom(row storage.Service, tenantUUID uuid.UUID) Registration {
 		TenantUUID: tenantUUID,
 		Name:       row.Name,
 		Kind:       row.Kind,
+		IsSystem:   row.IsSystem,
 		Status:     row.Status,
 		Endpoint:   row.Endpoint,
 		Version:    row.Version,
