@@ -27,6 +27,7 @@ type Querier interface {
 	CreateTenant(ctx context.Context, arg CreateTenantParams) (Tenant, error)
 	GetAgentByID(ctx context.Context, agentID int64) (Agent, error)
 	GetAgentByUUID(ctx context.Context, agentUuid uuid.UUID) (Agent, error)
+	GetControlPlane(ctx context.Context) (ControlPlane, error)
 	GetProjectByID(ctx context.Context, projectID int64) (Project, error)
 	GetProjectByUUID(ctx context.Context, projectUuid uuid.UUID) (Project, error)
 	GetProviderByID(ctx context.Context, providerID int64) (Provider, error)
@@ -69,6 +70,7 @@ type Querier interface {
 	UpdateResourceStatus(ctx context.Context, arg UpdateResourceStatusParams) (Resource, error)
 	UpdateServiceStatus(ctx context.Context, arg UpdateServiceStatusParams) (Service, error)
 	UpdateTenant(ctx context.Context, arg UpdateTenantParams) (Tenant, error)
+	UpsertControlPlane(ctx context.Context, arg UpsertControlPlaneParams) (ControlPlane, error)
 }
 
 var _ Querier = (*Queries)(nil)

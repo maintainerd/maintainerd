@@ -8,13 +8,14 @@ import (
 	"github.com/maintainerd/core/internal/provider"
 	"github.com/maintainerd/core/internal/resource"
 	"github.com/maintainerd/core/internal/service"
+	"github.com/maintainerd/core/internal/setup"
 	"github.com/maintainerd/core/internal/storage"
 	"github.com/maintainerd/core/internal/tenant"
 )
 
 // App is the wired domain layer: sqlc queries plus each domain's service + HTTP
 // handler. It also exposes the services non-HTTP transports need (the gRPC
-// AgentGateway uses AgentSvc + ResourceSvc).
+// AgentGateway uses AgentSvc + ResourceSvc; boot uses SetupOrch).
 type App struct {
 	Tenant   *tenant.Handler
 	Project  *project.Handler
@@ -22,9 +23,11 @@ type App struct {
 	Provider *provider.Handler
 	Agent    *agent.Handler
 	Resource *resource.Handler
+	Setup    *setup.Handler
 
 	AgentSvc    *agent.Service
 	ResourceSvc *resource.Service
+	SetupOrch   *setup.Orchestrator
 }
 
 // New wires the domain layer over a pgx connection pool. The single
@@ -34,6 +37,7 @@ func New(pool *pgxpool.Pool) *App {
 
 	agentSvc := agent.NewService(q)
 	resourceSvc := resource.NewService(q)
+	setupOrch := setup.NewOrchestrator(q, setup.LoadConfig())
 
 	return &App{
 		Tenant:   tenant.NewHandler(tenant.NewService(q)),
@@ -42,8 +46,10 @@ func New(pool *pgxpool.Pool) *App {
 		Provider: provider.NewHandler(provider.NewService(q)),
 		Agent:    agent.NewHandler(agentSvc),
 		Resource: resource.NewHandler(resourceSvc),
+		Setup:    setup.NewHandler(setupOrch),
 
 		AgentSvc:    agentSvc,
 		ResourceSvc: resourceSvc,
+		SetupOrch:   setupOrch,
 	}
 }

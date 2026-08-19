@@ -29,6 +29,16 @@ type Agent struct {
 	DeletedAt    pgtype.Timestamptz `json:"deleted_at"`
 }
 
+type ControlPlane struct {
+	ID                   int32              `json:"id"`
+	AuthTenantUuid       pgtype.UUID        `json:"auth_tenant_uuid"`
+	Data                 []byte             `json:"data"`
+	ControlPrivateKeyPem string             `json:"control_private_key_pem"`
+	SetupCompletedAt     pgtype.Timestamptz `json:"setup_completed_at"`
+	CreatedAt            time.Time          `json:"created_at"`
+	UpdatedAt            time.Time          `json:"updated_at"`
+}
+
 type Project struct {
 	ProjectID   int64              `json:"project_id"`
 	ProjectUuid uuid.UUID          `json:"project_uuid"`

@@ -70,6 +70,15 @@ func run(parent context.Context) error {
 
 	application := app.New(pool)
 
+	// When SETUP_ENABLED is set, Core drives Auth's gRPC setup on boot to
+	// provision the system tenant/admin and register itself as the control
+	// service, then records the credentials. Best-effort + retrying (Auth may
+	// still be starting); never blocks serving, and no-ops once complete.
+	if application.SetupOrch.Enabled() {
+		slog.Info("startup: setup orchestration enabled — provisioning against auth in the background")
+		go application.SetupOrch.RunWithRetry(ctx)
+	}
+
 	// Serve the HTTP REST API and the core.v1 AgentGateway gRPC concurrently.
 	// If either fails, the group context cancels and the other drains.
 	g, gctx := errgroup.WithContext(ctx)

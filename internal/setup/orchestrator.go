@@ -1,0 +1,370 @@
+// Package setup makes Core the orchestrator: on a fresh install Core drives
+// Auth's gRPC SetupService to create the system tenant + admin and to register
+// itself as Auth's control service, then persists everything Auth hands back and
+// seeds its own service registry (Auth/Secret/Docker as system services).
+package setup
+
+import (
+	"context"
+	"crypto/tls"
+	"crypto/x509"
+	"encoding/json"
+	"fmt"
+	"log/slog"
+	"os"
+	"time"
+
+	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgtype"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials"
+	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/metadata"
+
+	authv1 "github.com/maintainerd/core/gen/maintainerd/auth/v1"
+	"github.com/maintainerd/core/internal/service"
+	"github.com/maintainerd/core/internal/storage"
+	"github.com/maintainerd/core/internal/tenant"
+)
+
+// setupTokenKey is the gRPC metadata header Auth reads the bootstrap token from.
+const setupTokenKey = "x-setup-token"
+
+// Orchestrator runs the one-time provisioning against Auth and records the
+// result in the control_plane singleton row.
+type Orchestrator struct {
+	q   *storage.Queries
+	cfg Config
+}
+
+func NewOrchestrator(q *storage.Queries, cfg Config) *Orchestrator {
+	return &Orchestrator{q: q, cfg: cfg}
+}
+
+// Enabled reports whether on-boot orchestration is turned on.
+func (o *Orchestrator) Enabled() bool { return o.cfg.Enabled }
+
+// Result is what Core learns from Auth; it is stored as control_plane.data.
+type Result struct {
+	AuthTenantID          string          `json:"auth_tenant_id"`
+	AuthAdminUserID       string          `json:"auth_admin_user_id"`
+	AuthDefaultClientID   string          `json:"auth_default_client_id"`
+	AuthDefaultProviderID string          `json:"auth_default_provider_id"`
+	ControlServiceID      string          `json:"control_service_id"`
+	ControlPolicyID       string          `json:"control_policy_id"`
+	ControlPolicyName     string          `json:"control_policy_name"`
+	ControlClientID       string          `json:"control_client_id"`
+	ControlOAuthClientID  string          `json:"control_oauth_client_id"`
+	TokenAuthMethod       string          `json:"token_auth_method"`
+	ResourceAPIID         string          `json:"resource_api_id"`
+	ResourceAPIIdentifier string          `json:"resource_api_identifier"`
+	AdminRoleID           string          `json:"admin_role_id"`
+	ConsoleClientID       string          `json:"console_client_id"`
+	ConsoleOAuthClientID  string          `json:"console_oauth_client_id"`
+	JWKS                  json.RawMessage `json:"jwks,omitempty"`
+	CompletedAt           time.Time       `json:"completed_at"`
+	AlreadyComplete       bool            `json:"already_complete"`
+}
+
+func (o *Orchestrator) dial(ctx context.Context) (*grpc.ClientConn, error) {
+	// Plaintext only when no TLS material is configured at all.
+	if o.cfg.AuthCAFile == "" && o.cfg.AuthClientCertFile == "" {
+		return grpc.NewClient(o.cfg.AuthAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	}
+
+	tlsCfg := &tls.Config{ServerName: o.cfg.AuthServerName}
+	if o.cfg.AuthCAFile != "" {
+		caPEM, err := os.ReadFile(o.cfg.AuthCAFile)
+		if err != nil {
+			return nil, fmt.Errorf("read auth CA: %w", err)
+		}
+		pool := x509.NewCertPool()
+		if !pool.AppendCertsFromPEM(caPEM) {
+			return nil, fmt.Errorf("auth CA file %q holds no valid certificate", o.cfg.AuthCAFile)
+		}
+		tlsCfg.RootCAs = pool
+	}
+	// Present a client cert when Auth's gRPC requires mTLS (control-plane mode).
+	if o.cfg.AuthClientCertFile != "" && o.cfg.AuthClientKeyFile != "" {
+		cert, err := tls.LoadX509KeyPair(o.cfg.AuthClientCertFile, o.cfg.AuthClientKeyFile)
+		if err != nil {
+			return nil, fmt.Errorf("load auth client cert: %w", err)
+		}
+		tlsCfg.Certificates = []tls.Certificate{cert}
+	}
+	return grpc.NewClient(o.cfg.AuthAddr, grpc.WithTransportCredentials(credentials.NewTLS(tlsCfg)))
+}
+
+// authCtx attaches the bootstrap token Auth's setup interceptor expects.
+func (o *Orchestrator) authCtx(ctx context.Context) context.Context {
+	return metadata.AppendToOutgoingContext(ctx, setupTokenKey, o.cfg.AuthToken)
+}
+
+// Run performs the full provisioning. It is safe to re-run once complete (it
+// short-circuits when Auth reports setup is already finished).
+func (o *Orchestrator) Run(ctx context.Context) (*Result, error) {
+	if o.cfg.AuthAddr == "" {
+		return nil, fmt.Errorf("AUTH_SETUP_ADDR is not set")
+	}
+	if o.cfg.AdminPassword == "" {
+		return nil, fmt.Errorf("SETUP_ADMIN_PASSWORD is required")
+	}
+
+	conn, err := o.dial(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = conn.Close() }()
+
+	cli := authv1.NewSetupServiceClient(conn)
+	actx := o.authCtx(ctx)
+
+	status, err := cli.GetSetupStatus(actx, &authv1.GetSetupStatusRequest{})
+	if err != nil {
+		return nil, fmt.Errorf("auth GetSetupStatus: %w", err)
+	}
+	if status.GetIsSetupComplete() {
+		slog.Info("core setup: auth already provisioned — loading persisted control plane")
+		res := o.loadPersisted(ctx)
+		res.AlreadyComplete = true
+		// Ensure the core mirror + registry exist even if a previous run only
+		// finished the auth side.
+		if err := o.mirror(ctx, res); err != nil {
+			slog.Warn("core setup: mirror after already-complete failed", "err", err)
+		}
+		return res, nil
+	}
+
+	res := &Result{}
+
+	// 1. System tenant.
+	t, err := cli.CreateTenant(actx, &authv1.CreateTenantRequest{
+		Name:        o.cfg.TenantName,
+		DisplayName: o.cfg.TenantDisplayName,
+		Description: "Maintainerd system tenant",
+	})
+	if err != nil {
+		return nil, fmt.Errorf("auth CreateTenant: %w", err)
+	}
+	res.AuthTenantID = t.GetTenantId()
+	res.AuthDefaultClientID = t.GetDefaultClientId()
+	res.AuthDefaultProviderID = t.GetDefaultProviderId()
+
+	// 2. IAM super-admin.
+	a, err := cli.CreateAdmin(actx, &authv1.CreateAdminRequest{
+		Username: o.cfg.AdminUsername,
+		Fullname: o.cfg.AdminFullname,
+		Password: o.cfg.AdminPassword,
+		Email:    o.cfg.AdminEmail,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("auth CreateAdmin: %w", err)
+	}
+	res.AuthAdminUserID = a.GetUserId()
+
+	// 3. Register Core as the control service (+ its control policy).
+	rc, err := cli.RegisterControlService(actx, &authv1.RegisterControlServiceRequest{
+		Name:        o.cfg.CoreServiceName,
+		DisplayName: "Maintainerd Core",
+		Description: "Maintainerd control plane",
+		Version:     "v1",
+	})
+	if err != nil {
+		return nil, fmt.Errorf("auth RegisterControlService: %w", err)
+	}
+	res.ControlServiceID = rc.GetServiceId()
+	res.ControlPolicyID = rc.GetPolicyId()
+	res.ControlPolicyName = rc.GetPolicyName()
+
+	// 4. Core's M2M control client (private_key_jwt — Core keeps the private key).
+	privPEM, jwks, err := generateControlKey()
+	if err != nil {
+		return nil, err
+	}
+	cc, err := cli.EnsureControlClient(actx, &authv1.EnsureControlClientRequest{
+		Name:        o.cfg.CoreServiceName + "-control",
+		DisplayName: "Maintainerd Core Control Client",
+		ServiceName: o.cfg.CoreServiceName,
+		Jwks:        jwks,
+		Audience:    o.cfg.CoreAudience,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("auth EnsureControlClient: %w", err)
+	}
+	res.ControlClientID = cc.GetClientId()
+	res.ControlOAuthClientID = cc.GetOauthClientId()
+	res.TokenAuthMethod = cc.GetTokenEndpointAuthMethod()
+	res.JWKS = json.RawMessage(jwks)
+
+	// 5. Core's own resource API (audience) + its permissions.
+	api, err := cli.EnsureResourceAPI(actx, &authv1.EnsureResourceAPIRequest{
+		ServiceName:        o.cfg.CoreServiceName,
+		ServiceDisplayName: "Maintainerd Core",
+		Name:               "Maintainerd Core API",
+		DisplayName:        "Maintainerd Core API",
+		Identifier:         o.cfg.CoreAudience,
+		Permissions: []*authv1.EnsureResourceAPIPermission{
+			{Name: "core:admin", Description: "Full administrative access to Maintainerd Core"},
+		},
+	})
+	if err != nil {
+		return nil, fmt.Errorf("auth EnsureResourceAPI: %w", err)
+	}
+	res.ResourceAPIID = api.GetApiId()
+	res.ResourceAPIIdentifier = api.GetIdentifier()
+
+	// 6. Admin role carrying those permissions, granted to the admin user.
+	role, err := cli.EnsureRole(actx, &authv1.EnsureRoleRequest{
+		Name:            "core-admin",
+		Description:     "Full access to Maintainerd Core",
+		PermissionNames: []string{"core:admin"},
+		AssignToUserId:  res.AuthAdminUserID,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("auth EnsureRole: %w", err)
+	}
+	res.AdminRoleID = role.GetRoleId()
+
+	// 7. The operator console SPA (public, auth_code + PKCE).
+	con, err := cli.EnsureConsoleClient(actx, &authv1.EnsureConsoleClientRequest{
+		Name:         "maintainerd-console",
+		DisplayName:  "Maintainerd Console",
+		Domain:       o.cfg.ConsoleDomain,
+		RedirectUris: o.cfg.ConsoleRedirectURIs,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("auth EnsureConsoleClient: %w", err)
+	}
+	res.ConsoleClientID = con.GetClientId()
+	res.ConsoleOAuthClientID = con.GetOauthClientId()
+
+	// 8. Lock setup.
+	if _, err := cli.CompleteSetup(actx, &authv1.CompleteSetupRequest{}); err != nil {
+		return nil, fmt.Errorf("auth CompleteSetup: %w", err)
+	}
+	res.CompletedAt = time.Now()
+
+	// Persist what Auth handed back, then mirror the tenant + seed the registry.
+	if err := o.persist(ctx, res, privPEM); err != nil {
+		return res, fmt.Errorf("persist control plane: %w", err)
+	}
+	if err := o.mirror(ctx, res); err != nil {
+		slog.Warn("core setup: mirror/registry seeding failed (non-fatal)", "err", err)
+	}
+
+	slog.Info("core setup: complete",
+		"auth_tenant", res.AuthTenantID,
+		"control_client", res.ControlClientID,
+		"admin_user", res.AuthAdminUserID)
+	return res, nil
+}
+
+func (o *Orchestrator) persist(ctx context.Context, res *Result, privPEM string) error {
+	data, err := json.Marshal(res)
+	if err != nil {
+		return err
+	}
+	var authUUID pgtype.UUID
+	if u, perr := uuid.Parse(res.AuthTenantID); perr == nil {
+		authUUID = pgtype.UUID{Bytes: u, Valid: true}
+	}
+	_, err = o.q.UpsertControlPlane(ctx, storage.UpsertControlPlaneParams{
+		AuthTenantUuid:       authUUID,
+		Data:                 data,
+		ControlPrivateKeyPem: privPEM,
+		SetupCompletedAt:     pgtype.Timestamptz{Time: res.CompletedAt, Valid: !res.CompletedAt.IsZero()},
+	})
+	return err
+}
+
+// mirror ensures Core has its own system tenant (keyed to Auth's) and registers
+// the system services (Auth/Secret/Docker) in Core's service registry. Conflicts
+// (re-runs) are logged and ignored.
+func (o *Orchestrator) mirror(ctx context.Context, res *Result) error {
+	tsvc := tenant.NewService(o.q)
+	ssvc := service.NewService(o.q)
+
+	sys, err := tsvc.GetSystem(ctx)
+	var coreTenant uuid.UUID
+	if err == nil && sys != nil {
+		coreTenant = sys.UUID
+	} else {
+		var authUUIDPtr *uuid.UUID
+		if u, perr := uuid.Parse(res.AuthTenantID); perr == nil {
+			authUUIDPtr = &u
+		}
+		created, cerr := tsvc.Create(ctx, tenant.CreateInput{
+			Name:           o.cfg.TenantName,
+			DisplayName:    o.cfg.TenantDisplayName,
+			Status:         "active",
+			IsSystem:       true,
+			AuthTenantUUID: authUUIDPtr,
+		})
+		if cerr != nil {
+			return fmt.Errorf("create core system tenant: %w", cerr)
+		}
+		coreTenant = created.UUID
+	}
+
+	systemServices := []struct{ name, kind, endpoint string }{
+		{"auth", "Auth", o.cfg.AuthEndpoint},
+		{"secret", "Secret", o.cfg.SecretEndpoint},
+		{"docker", "Docker", o.cfg.DockerEndpoint},
+	}
+	for _, s := range systemServices {
+		if _, err := ssvc.Create(ctx, service.CreateInput{
+			TenantUUID: coreTenant,
+			Name:       s.name,
+			Kind:       s.kind,
+			IsSystem:   true,
+			Endpoint:   s.endpoint,
+		}); err != nil {
+			slog.Warn("core setup: register system service", "name", s.name, "err", err)
+		}
+	}
+	return nil
+}
+
+// loadPersisted returns the stored control-plane result (empty if none yet).
+func (o *Orchestrator) loadPersisted(ctx context.Context) *Result {
+	row, err := o.q.GetControlPlane(ctx)
+	if err != nil {
+		return &Result{}
+	}
+	res := &Result{}
+	if len(row.Data) > 0 {
+		_ = json.Unmarshal(row.Data, res)
+	}
+	if row.SetupCompletedAt.Valid {
+		res.CompletedAt = row.SetupCompletedAt.Time
+	}
+	return res
+}
+
+// Status reports whether Core has recorded a completed setup.
+func (o *Orchestrator) Status(ctx context.Context) (completed bool, res *Result) {
+	res = o.loadPersisted(ctx)
+	return !res.CompletedAt.IsZero(), res
+}
+
+// RunWithRetry keeps attempting Run until it succeeds or ctx is cancelled —
+// Auth may not be reachable the moment Core boots.
+func (o *Orchestrator) RunWithRetry(ctx context.Context) {
+	backoff := 3 * time.Second
+	const maxBackoff = 30 * time.Second
+	for {
+		if _, err := o.Run(ctx); err == nil {
+			return
+		} else {
+			slog.Warn("core setup: attempt failed — will retry", "err", err, "retry_in", backoff.String())
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(backoff):
+		}
+		if backoff < maxBackoff {
+			backoff *= 2
+		}
+	}
+}

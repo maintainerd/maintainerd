@@ -34,6 +34,7 @@ func Router(a *app.App) http.Handler {
 		r.Mount("/providers", a.Provider.Routes())
 		r.Mount("/agents", a.Agent.Routes())
 		r.Mount("/resources", a.Resource.Routes())
+		r.Mount("/setup", a.Setup.Routes())
 	})
 
 	return r
