@@ -174,32 +174,31 @@ func (o *Orchestrator) RunWith(ctx context.Context, in RunInput) (*Result, error
 
 	res := &Result{}
 
-	// 1. System tenant.
-	t, err := cli.CreateTenant(actx, &authv1.CreateTenantRequest{
-		Name:        tenantName,
-		DisplayName: tenantDisplay,
-		Description: "Maintainerd system tenant",
-	})
-	if err != nil {
-		return nil, fmt.Errorf("auth CreateTenant: %w", err)
+	// 1. System tenant. CreateTenant is not idempotent, so skip it if a previous
+	// (partial) run already created it — the Ensure* RPCs below resolve the
+	// system tenant on their own.
+	if !status.GetIsTenantSetup() {
+		t, err := cli.CreateTenant(actx, &authv1.CreateTenantRequest{
+			Name:        tenantName,
+			DisplayName: tenantDisplay,
+			Description: "Maintainerd system tenant",
+		})
+		if err != nil {
+			return nil, fmt.Errorf("auth CreateTenant: %w", err)
+		}
+		res.AuthTenantID = t.GetTenantId()
+		res.AuthDefaultClientID = t.GetDefaultClientId()
+		res.AuthDefaultProviderID = t.GetDefaultProviderId()
+	} else {
+		slog.Info("core setup: auth tenant already exists — skipping CreateTenant")
 	}
-	res.AuthTenantID = t.GetTenantId()
-	res.AuthDefaultClientID = t.GetDefaultClientId()
-	res.AuthDefaultProviderID = t.GetDefaultProviderId()
 
-	// 2. IAM super-admin.
-	a, err := cli.CreateAdmin(actx, &authv1.CreateAdminRequest{
-		Username: adminUsername,
-		Fullname: adminFullname,
-		Password: adminPassword,
-		Email:    adminEmail,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("auth CreateAdmin: %w", err)
-	}
-	res.AuthAdminUserID = a.GetUserId()
+	// The admin is created LAST: Auth's CreateAdmin flips the system tenant to
+	// "active", which locks setup (ensureSetupOpen refuses once active). Every
+	// control-plane registration must therefore happen while setup is still open,
+	// with CreateAdmin as the final gated call.
 
-	// 3. Register Core as the control service (+ its control policy).
+	// 2. Register Core as the control service (+ its control policy).
 	rc, err := cli.RegisterControlService(actx, &authv1.RegisterControlServiceRequest{
 		Name:        o.cfg.CoreServiceName,
 		DisplayName: "Maintainerd Core",
@@ -213,7 +212,7 @@ func (o *Orchestrator) RunWith(ctx context.Context, in RunInput) (*Result, error
 	res.ControlPolicyID = rc.GetPolicyId()
 	res.ControlPolicyName = rc.GetPolicyName()
 
-	// 4. Core's M2M control client (private_key_jwt — Core keeps the private key).
+	// 3. Core's M2M control client (private_key_jwt — Core keeps the private key).
 	privPEM, jwks, err := generateControlKey()
 	if err != nil {
 		return nil, err
@@ -233,8 +232,14 @@ func (o *Orchestrator) RunWith(ctx context.Context, in RunInput) (*Result, error
 	res.TokenAuthMethod = cc.GetTokenEndpointAuthMethod()
 	res.JWKS = json.RawMessage(jwks)
 
-	// 5. Core's own resource API (audience) + its permissions.
-	api, err := cli.EnsureResourceAPI(actx, &authv1.EnsureResourceAPIRequest{
+	// Steps 4-6 wire Core's FULL IAM/OAuth integration (resource API, admin role,
+	// console OAuth client). They are BEST-EFFORT: the essential control-plane
+	// identity is the service + control client above, and the console has no OAuth
+	// login yet — so a failure here is logged and setup still completes. These are
+	// re-runnable once Auth enforcement is turned on.
+
+	// 4. Core's own resource API (audience) + its permissions.
+	if api, err := cli.EnsureResourceAPI(actx, &authv1.EnsureResourceAPIRequest{
 		ServiceName:        o.cfg.CoreServiceName,
 		ServiceDisplayName: "Maintainerd Core",
 		Name:               "Maintainerd Core API",
@@ -243,39 +248,56 @@ func (o *Orchestrator) RunWith(ctx context.Context, in RunInput) (*Result, error
 		Permissions: []*authv1.EnsureResourceAPIPermission{
 			{Name: "core:admin", Description: "Full administrative access to Maintainerd Core"},
 		},
-	})
-	if err != nil {
-		return nil, fmt.Errorf("auth EnsureResourceAPI: %w", err)
+	}); err != nil {
+		slog.Warn("core setup: EnsureResourceAPI failed (non-fatal)", "err", err)
+	} else {
+		res.ResourceAPIID = api.GetApiId()
+		res.ResourceAPIIdentifier = api.GetIdentifier()
 	}
-	res.ResourceAPIID = api.GetApiId()
-	res.ResourceAPIIdentifier = api.GetIdentifier()
 
-	// 6. Admin role carrying those permissions, granted to the admin user.
-	role, err := cli.EnsureRole(actx, &authv1.EnsureRoleRequest{
+	// 5. The core-admin role (registered for reuse; the admin gets full access via
+	// the built-in super-admin role CreateAdmin grants).
+	if role, err := cli.EnsureRole(actx, &authv1.EnsureRoleRequest{
 		Name:            "core-admin",
 		Description:     "Full access to Maintainerd Core",
 		PermissionNames: []string{"core:admin"},
-		AssignToUserId:  res.AuthAdminUserID,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("auth EnsureRole: %w", err)
+	}); err != nil {
+		slog.Warn("core setup: EnsureRole failed (non-fatal)", "err", err)
+	} else {
+		res.AdminRoleID = role.GetRoleId()
 	}
-	res.AdminRoleID = role.GetRoleId()
 
-	// 7. The operator console SPA (public, auth_code + PKCE).
-	con, err := cli.EnsureConsoleClient(actx, &authv1.EnsureConsoleClientRequest{
+	// 6. The operator console SPA (public, auth_code + PKCE).
+	if con, err := cli.EnsureConsoleClient(actx, &authv1.EnsureConsoleClientRequest{
 		Name:         "maintainerd-console",
 		DisplayName:  "Maintainerd Console",
 		Domain:       o.cfg.ConsoleDomain,
 		RedirectUris: o.cfg.ConsoleRedirectURIs,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("auth EnsureConsoleClient: %w", err)
+	}); err != nil {
+		slog.Warn("core setup: EnsureConsoleClient failed (non-fatal)", "err", err)
+	} else {
+		res.ConsoleClientID = con.GetClientId()
+		res.ConsoleOAuthClientID = con.GetOauthClientId()
 	}
-	res.ConsoleClientID = con.GetClientId()
-	res.ConsoleOAuthClientID = con.GetOauthClientId()
 
-	// 8. Lock setup.
+	// 7. IAM super-admin — the FINAL gated call: it activates the system tenant
+	// and locks setup. Not idempotent, so skip if a prior run already created it.
+	if !status.GetIsAdminSetup() {
+		a, err := cli.CreateAdmin(actx, &authv1.CreateAdminRequest{
+			Username: adminUsername,
+			Fullname: adminFullname,
+			Password: adminPassword,
+			Email:    adminEmail,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("auth CreateAdmin: %w", err)
+		}
+		res.AuthAdminUserID = a.GetUserId()
+	} else {
+		slog.Info("core setup: auth admin already exists — skipping CreateAdmin")
+	}
+
+	// 8. Lock setup (idempotent — CreateAdmin already activated the tenant).
 	if _, err := cli.CompleteSetup(actx, &authv1.CompleteSetupRequest{}); err != nil {
 		return nil, fmt.Errorf("auth CompleteSetup: %w", err)
 	}

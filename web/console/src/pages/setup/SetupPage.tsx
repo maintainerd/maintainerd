@@ -126,10 +126,11 @@ export default function SetupPage() {
               <FormPasswordField
                 label="Password"
                 required
+                description="At least 12 characters."
                 error={errors.admin_password?.message}
                 {...register('admin_password', {
                   required: 'Password is required',
-                  minLength: { value: 8, message: 'At least 8 characters' },
+                  minLength: { value: 12, message: 'At least 12 characters' },
                 })}
               />
               <FormPasswordField

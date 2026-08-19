@@ -87,7 +87,9 @@ func LoadConfig() Config {
 		AdminPassword:     env("SETUP_ADMIN_PASSWORD", ""),
 
 		CoreServiceName:     "maintainerd-core",
-		CoreAudience:        env("CORE_API_AUDIENCE", "https://"+consoleDomain),
+		// The API identifier (aud) tokens for Core are minted for — distinct from
+		// the console origin.
+		CoreAudience: env("CORE_API_AUDIENCE", "https://core.maintainerd.local"),
 		ConsoleDomain:       consoleDomain,
 		ConsoleRedirectURIs: envList("CORE_CONSOLE_REDIRECT_URIS", "https://"+consoleDomain+"/auth/callback"),
 

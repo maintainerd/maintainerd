@@ -7,6 +7,8 @@ import (
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 
 	"github.com/maintainerd/core/internal/platform/response"
 )
@@ -54,7 +56,22 @@ func (h *Handler) trigger(w http.ResponseWriter, r *http.Request) {
 	}
 	res, err := h.orch.RunWith(r.Context(), in)
 	if err != nil {
-		response.HandleServiceError(w, r, "setup failed", err)
+		// Surface the real reason (e.g. Auth's "password is a common weak
+		// password") so the wizard can show it, not a generic "setup failed".
+		msg := err.Error()
+		httpStatus := http.StatusBadGateway
+		if st, ok := status.FromError(err); ok {
+			msg = st.Message()
+			switch st.Code() {
+			case codes.InvalidArgument, codes.AlreadyExists, codes.FailedPrecondition:
+				httpStatus = http.StatusBadRequest
+			case codes.Unavailable, codes.DeadlineExceeded:
+				httpStatus = http.StatusBadGateway
+			default:
+				httpStatus = http.StatusBadGateway
+			}
+		}
+		response.Error(w, httpStatus, msg)
 		return
 	}
 	response.Success(w, res, "setup complete")
