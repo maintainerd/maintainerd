@@ -8,6 +8,7 @@ import { queryClient } from '@/lib/queryClient'
 import { PrivateLayout } from './components/layout/PrivateLayout'
 import AppLoadingScreen from './components/layout/AppLoadingScreen'
 import ErrorBoundary from './components/ErrorBoundary'
+import { SetupGate } from './components/SetupGate'
 import { CoreTenantProvider } from './context/CoreTenantContext'
 
 // The app shell stays eager; every route page is code-split so the initial
@@ -30,6 +31,7 @@ const AgentForm = lazy(() => import('./pages/agents/AgentForm'))
 const AgentDetails = lazy(() => import('./pages/agents/AgentDetails'))
 const ResourceForm = lazy(() => import('./pages/resources/ResourceForm'))
 const ResourceDetails = lazy(() => import('./pages/resources/ResourceDetails'))
+const SetupPage = lazy(() => import('./pages/setup/SetupPage'))
 const NotFoundPage = lazy(() => import('./pages/not-found/NotFoundPage'))
 const ServiceUnavailablePage = lazy(() => import('./pages/service-unavailable/ServiceUnavailablePage'))
 
@@ -41,8 +43,10 @@ function App() {
       <CoreTenantProvider>
         <ErrorBoundary resetKey={`${location.pathname}${location.search}`}>
           <Suspense fallback={<AppLoadingScreen />}>
+            <SetupGate>
             <Routes>
               <Route path="/" element={<Navigate to="/dashboard" replace />} />
+              <Route path="/setup" element={<SetupPage />} />
               <Route path="/service-unavailable" element={<ServiceUnavailablePage />} />
               <Route element={<PrivateLayout fullWidth />}>
                 <Route path="dashboard" element={<DashboardPage />} />
@@ -80,6 +84,7 @@ function App() {
               </Route>
               <Route path="*" element={<NotFoundPage />} />
             </Routes>
+            </SetupGate>
           </Suspense>
         </ErrorBoundary>
       </CoreTenantProvider>

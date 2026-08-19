@@ -1,6 +1,9 @@
 package setup
 
 import (
+	"encoding/json"
+	"errors"
+	"io"
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
@@ -36,7 +39,20 @@ func (h *Handler) status(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) trigger(w http.ResponseWriter, r *http.Request) {
-	res, err := h.orch.Run(r.Context())
+	// Body is optional: the wizard sends the tenant + admin; an empty body falls
+	// back to the env-configured defaults.
+	var in RunInput
+	if body, _ := io.ReadAll(io.LimitReader(r.Body, 1<<20)); len(body) > 0 {
+		if err := json.Unmarshal(body, &in); err != nil {
+			response.BadRequestBody(w)
+			return
+		}
+	}
+	if in.AdminPassword == "" && !h.orch.hasEnvAdminPassword() {
+		response.ValidationError(w, errors.New("admin_password is required"))
+		return
+	}
+	res, err := h.orch.RunWith(r.Context(), in)
 	if err != nil {
 		response.HandleServiceError(w, r, "setup failed", err)
 		return

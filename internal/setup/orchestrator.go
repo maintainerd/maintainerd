@@ -44,6 +44,10 @@ func NewOrchestrator(q *storage.Queries, cfg Config) *Orchestrator {
 // Enabled reports whether on-boot orchestration is turned on.
 func (o *Orchestrator) Enabled() bool { return o.cfg.Enabled }
 
+// hasEnvAdminPassword reports whether an admin password is configured via env,
+// so the wizard may omit it (unattended installs bake it into the environment).
+func (o *Orchestrator) hasEnvAdminPassword() bool { return o.cfg.AdminPassword != "" }
+
 // Result is what Core learns from Auth; it is stored as control_plane.data.
 type Result struct {
 	AuthTenantID          string          `json:"auth_tenant_id"`
@@ -100,14 +104,47 @@ func (o *Orchestrator) authCtx(ctx context.Context) context.Context {
 	return metadata.AppendToOutgoingContext(ctx, setupTokenKey, o.cfg.AuthToken)
 }
 
-// Run performs the full provisioning. It is safe to re-run once complete (it
-// short-circuits when Auth reports setup is already finished).
+// RunInput is the tenant + admin the wizard collects. Empty fields fall back to
+// the env-configured defaults (so an unattended on-boot run works with no body).
+type RunInput struct {
+	TenantName        string `json:"tenant_name"`
+	TenantDisplayName string `json:"tenant_display_name"`
+	AdminUsername     string `json:"admin_username"`
+	AdminFullname     string `json:"admin_fullname"`
+	AdminEmail        string `json:"admin_email"`
+	AdminPassword     string `json:"admin_password"`
+}
+
+func firstNonEmpty(vals ...string) string {
+	for _, v := range vals {
+		if v != "" {
+			return v
+		}
+	}
+	return ""
+}
+
+// Run performs the full provisioning using the env-configured defaults (the
+// on-boot / unattended path).
 func (o *Orchestrator) Run(ctx context.Context) (*Result, error) {
+	return o.RunWith(ctx, RunInput{})
+}
+
+// RunWith performs the full provisioning using the supplied tenant + admin
+// (the console wizard path), falling back to env defaults for any empty field.
+// It is safe to re-run once complete (short-circuits when Auth reports done).
+func (o *Orchestrator) RunWith(ctx context.Context, in RunInput) (*Result, error) {
 	if o.cfg.AuthAddr == "" {
 		return nil, fmt.Errorf("AUTH_SETUP_ADDR is not set")
 	}
-	if o.cfg.AdminPassword == "" {
-		return nil, fmt.Errorf("SETUP_ADMIN_PASSWORD is required")
+	tenantName := firstNonEmpty(in.TenantName, o.cfg.TenantName)
+	tenantDisplay := firstNonEmpty(in.TenantDisplayName, o.cfg.TenantDisplayName, tenantName)
+	adminUsername := firstNonEmpty(in.AdminUsername, o.cfg.AdminUsername)
+	adminFullname := firstNonEmpty(in.AdminFullname, o.cfg.AdminFullname, adminUsername)
+	adminEmail := firstNonEmpty(in.AdminEmail, o.cfg.AdminEmail)
+	adminPassword := firstNonEmpty(in.AdminPassword, o.cfg.AdminPassword)
+	if adminPassword == "" {
+		return nil, fmt.Errorf("admin password is required")
 	}
 
 	conn, err := o.dial(ctx)
@@ -129,7 +166,7 @@ func (o *Orchestrator) Run(ctx context.Context) (*Result, error) {
 		res.AlreadyComplete = true
 		// Ensure the core mirror + registry exist even if a previous run only
 		// finished the auth side.
-		if err := o.mirror(ctx, res); err != nil {
+		if err := o.mirror(ctx, res, tenantName, tenantDisplay); err != nil {
 			slog.Warn("core setup: mirror after already-complete failed", "err", err)
 		}
 		return res, nil
@@ -139,8 +176,8 @@ func (o *Orchestrator) Run(ctx context.Context) (*Result, error) {
 
 	// 1. System tenant.
 	t, err := cli.CreateTenant(actx, &authv1.CreateTenantRequest{
-		Name:        o.cfg.TenantName,
-		DisplayName: o.cfg.TenantDisplayName,
+		Name:        tenantName,
+		DisplayName: tenantDisplay,
 		Description: "Maintainerd system tenant",
 	})
 	if err != nil {
@@ -152,10 +189,10 @@ func (o *Orchestrator) Run(ctx context.Context) (*Result, error) {
 
 	// 2. IAM super-admin.
 	a, err := cli.CreateAdmin(actx, &authv1.CreateAdminRequest{
-		Username: o.cfg.AdminUsername,
-		Fullname: o.cfg.AdminFullname,
-		Password: o.cfg.AdminPassword,
-		Email:    o.cfg.AdminEmail,
+		Username: adminUsername,
+		Fullname: adminFullname,
+		Password: adminPassword,
+		Email:    adminEmail,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("auth CreateAdmin: %w", err)
@@ -248,7 +285,7 @@ func (o *Orchestrator) Run(ctx context.Context) (*Result, error) {
 	if err := o.persist(ctx, res, privPEM); err != nil {
 		return res, fmt.Errorf("persist control plane: %w", err)
 	}
-	if err := o.mirror(ctx, res); err != nil {
+	if err := o.mirror(ctx, res, tenantName, tenantDisplay); err != nil {
 		slog.Warn("core setup: mirror/registry seeding failed (non-fatal)", "err", err)
 	}
 
@@ -280,7 +317,7 @@ func (o *Orchestrator) persist(ctx context.Context, res *Result, privPEM string)
 // mirror ensures Core has its own system tenant (keyed to Auth's) and registers
 // the system services (Auth/Secret/Docker) in Core's service registry. Conflicts
 // (re-runs) are logged and ignored.
-func (o *Orchestrator) mirror(ctx context.Context, res *Result) error {
+func (o *Orchestrator) mirror(ctx context.Context, res *Result, tenantName, tenantDisplay string) error {
 	tsvc := tenant.NewService(o.q)
 	ssvc := service.NewService(o.q)
 
@@ -294,8 +331,8 @@ func (o *Orchestrator) mirror(ctx context.Context, res *Result) error {
 			authUUIDPtr = &u
 		}
 		created, cerr := tsvc.Create(ctx, tenant.CreateInput{
-			Name:           o.cfg.TenantName,
-			DisplayName:    o.cfg.TenantDisplayName,
+			Name:           firstNonEmpty(tenantName, o.cfg.TenantName),
+			DisplayName:    firstNonEmpty(tenantDisplay, o.cfg.TenantDisplayName),
 			Status:         "active",
 			IsSystem:       true,
 			AuthTenantUUID: authUUIDPtr,
