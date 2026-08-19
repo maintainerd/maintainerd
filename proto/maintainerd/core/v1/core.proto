@@ -1,0 +1,74 @@
+syntax = "proto3";
+
+// AgentGateway is the control-plane contract that agents call to register, pull
+// work, and report observed state. Core owns and serves it; agents are clients.
+// This is the pull-model seam: the agent dials Core (never the reverse).
+package maintainerd.core.v1;
+
+option go_package = "github.com/maintainerd/core/gen/maintainerd/core/v1;corev1";
+
+// AgentGateway is Core's agent-facing control plane.
+service AgentGatewayService {
+  // Register announces an agent (marks it online, records version/capabilities).
+  rpc Register(RegisterRequest) returns (RegisterResponse);
+  // Heartbeat keeps an agent marked online and stamps last-seen.
+  rpc Heartbeat(HeartbeatRequest) returns (HeartbeatResponse);
+  // PullWork leases resources that need reconciling to the calling agent.
+  rpc PullWork(PullWorkRequest) returns (PullWorkResponse);
+  // ReportStatus records observed state the agent produced after acting.
+  rpc ReportStatus(ReportStatusRequest) returns (ReportStatusResponse);
+}
+
+message RegisterRequest {
+  string agent_uuid = 1;
+  string version = 2;
+  repeated string capabilities = 3;
+}
+
+message RegisterResponse {
+  bool ok = 1;
+}
+
+message HeartbeatRequest {
+  string agent_uuid = 1;
+}
+
+message HeartbeatResponse {
+  bool ok = 1;
+}
+
+message PullWorkRequest {
+  string agent_uuid = 1;
+  int32 max_items = 2;
+}
+
+// WorkItem is a resource that needs reconciling — the minimal shape an executor
+// needs. spec_json is the desired spec (JSON); generation is the desired revision.
+message WorkItem {
+  string resource_uuid = 1;
+  string kind = 2;
+  string name = 3;
+  string spec_json = 4;
+  int64 generation = 5;
+}
+
+message PullWorkResponse {
+  repeated WorkItem items = 1;
+}
+
+// StatusReport is the observed state the agent produced for one resource.
+message StatusReport {
+  string resource_uuid = 1;
+  string state = 2;
+  string status_json = 3;
+  int64 observed_generation = 4;
+}
+
+message ReportStatusRequest {
+  string agent_uuid = 1;
+  repeated StatusReport reports = 2;
+}
+
+message ReportStatusResponse {
+  int32 accepted = 1;
+}

@@ -1,0 +1,35 @@
+FROM golang:1.26-alpine@sha256:0178a641fbb4858c5f1b48e34bdaabe0350a330a1b1149aabd498d0699ff5fb2
+ENV GOTOOLCHAIN=auto
+
+# Install system dependencies
+RUN apk add --no-cache bash git make protobuf curl
+
+# Pure-Go builds only — keeps installs off the missing C toolchain on alpine.
+ENV CGO_ENABLED=0
+
+# Install air (live reload) - compatible version for Go 1.26
+# NOTE: schema migrations run in-process at startup via
+# internal/platform/runner/migration.go, so no external migration tool is needed.
+RUN go install github.com/air-verse/air@v1.62.0
+
+# Set working directory
+WORKDIR /usr/src/app
+
+# Copy go mod files first for better caching
+COPY go.mod go.sum ./
+RUN go mod download
+
+# Copy Makefile
+COPY Makefile ./
+
+# Create tmp directory for air
+RUN mkdir -p tmp
+
+# Expose ports
+EXPOSE 8080 8081
+
+# Set environment for development
+ENV GOOS=linux
+
+# Use air for hot reloading
+CMD ["air", "-c", ".air.toml"]

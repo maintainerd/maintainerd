@@ -1,0 +1,48 @@
+-- +goose Up
+-- The declarative resource: the heart of the control plane. Every managed thing
+-- (Container, Database, Bucket, ...) is a resource with a desired `spec` and an
+-- observed `status`. The reconciler drives status -> spec, idempotently.
+--   generation           bumps on every spec change (the desired revision)
+--   observed_generation  the generation the reconciler last acted on
+--   state                coarse lifecycle for quick filtering
+--   owner_resource_id    the owner graph (cascade + dependency ordering)
+CREATE TABLE IF NOT EXISTS resources (
+    resource_id         BIGSERIAL PRIMARY KEY,
+    resource_uuid       UUID NOT NULL UNIQUE DEFAULT gen_random_uuid(),
+    tenant_id           BIGINT NOT NULL REFERENCES tenants (tenant_id) ON DELETE CASCADE,
+    project_id          BIGINT NOT NULL REFERENCES projects (project_id) ON DELETE CASCADE,
+    provider_id         BIGINT REFERENCES providers (provider_id) ON DELETE SET NULL,
+    agent_id            BIGINT REFERENCES agents (agent_id) ON DELETE SET NULL,
+    owner_resource_id   BIGINT REFERENCES resources (resource_id) ON DELETE CASCADE,
+    kind                VARCHAR(50) NOT NULL,
+    name                VARCHAR(100) NOT NULL,
+    state               VARCHAR(20) NOT NULL DEFAULT 'pending',
+    spec                JSONB NOT NULL DEFAULT '{}',
+    status              JSONB NOT NULL DEFAULT '{}',
+    generation          BIGINT NOT NULL DEFAULT 1,
+    observed_generation BIGINT NOT NULL DEFAULT 0,
+    metadata            JSONB NOT NULL DEFAULT '{}',
+    created_by          BIGINT,
+    updated_by          BIGINT,
+    created_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
+    deleted_at          TIMESTAMPTZ
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS uq_resources_project_kind_name ON resources (project_id, kind, name) WHERE deleted_at IS NULL;
+CREATE INDEX IF NOT EXISTS idx_resources_tenant_id ON resources (tenant_id);
+CREATE INDEX IF NOT EXISTS idx_resources_project_id ON resources (project_id);
+CREATE INDEX IF NOT EXISTS idx_resources_provider_id ON resources (provider_id);
+CREATE INDEX IF NOT EXISTS idx_resources_agent_id ON resources (agent_id);
+CREATE INDEX IF NOT EXISTS idx_resources_owner_resource_id ON resources (owner_resource_id);
+CREATE INDEX IF NOT EXISTS idx_resources_kind ON resources (kind);
+CREATE INDEX IF NOT EXISTS idx_resources_state ON resources (state);
+-- The reconciler's hot query: rows whose observed state is behind their desired spec.
+CREATE INDEX IF NOT EXISTS idx_resources_out_of_sync ON resources (state) WHERE observed_generation < generation AND deleted_at IS NULL;
+CREATE INDEX IF NOT EXISTS idx_resources_spec ON resources USING GIN (spec);
+CREATE INDEX IF NOT EXISTS idx_resources_metadata ON resources USING GIN (metadata);
+CREATE INDEX IF NOT EXISTS idx_resources_created_at ON resources (created_at);
+CREATE INDEX IF NOT EXISTS idx_resources_deleted_at ON resources (deleted_at) WHERE deleted_at IS NULL;
+
+-- +goose Down
+DROP TABLE IF EXISTS resources;

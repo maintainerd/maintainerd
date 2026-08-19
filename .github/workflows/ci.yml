@@ -1,0 +1,242 @@
+name: CI
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main, develop]
+
+permissions:
+  contents: read
+
+jobs:
+  # ─────────────────────────────────────────────────────────────────────────────
+  # Proto — buf lint + breaking checks
+  # ─────────────────────────────────────────────────────────────────────────────
+  proto:
+    name: Proto
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@44694675825211faa026b3c33043df3e48a5fa00 # v6.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Install buf
+        run: go install github.com/bufbuild/buf/cmd/buf@v1.59.0
+
+      - name: Lint proto contracts
+        run: make proto-lint
+
+      - name: Check proto breaking changes
+        run: make proto-breaking
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # Test — unit tests with race detector + coverage
+  # ─────────────────────────────────────────────────────────────────────────────
+  test:
+    name: Test (Go ${{ matrix.go }})
+    runs-on: ubuntu-latest
+
+    strategy:
+      matrix:
+        go: ["1.26.6"]
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Go ${{ matrix.go }}
+        uses: actions/setup-go@44694675825211faa026b3c33043df3e48a5fa00 # v6.0.0
+        with:
+          go-version: ${{ matrix.go }}
+          cache: true
+
+      - name: Download dependencies
+        run: go mod download
+
+      - name: Verify dependencies
+        run: go mod verify
+
+      - name: Run tests (race detector + coverage)
+        id: unit-tests
+        continue-on-error: true
+        run: |
+          go test ./... \
+            -count=1 \
+            -race \
+            -coverprofile=coverage.out \
+            -covermode=atomic \
+            -timeout=600s
+
+      - name: Print coverage summary
+        if: ${{ always() && hashFiles('coverage.out') != '' }}
+        run: go tool cover -func=coverage.out | tail -1
+
+      - name: Enforce coverage floor
+        if: ${{ always() && hashFiles('coverage.out') != '' }}
+        env:
+          # Absolute floor that prevents regression. Ratchet toward 80% as
+          # coverage improves (baseline ~69%); Codecov also enforces the
+          # relative no-regression check.
+          COVERAGE_MIN: "68"
+        run: |
+          # Exclude generated protobuf code — same exclusion policy as gosec.
+          # internal/platform/gen contains ~12k statements of codegen that are
+          # never directly unit-tested; including them collapses the metric.
+          grep -v 'internal/platform/gen/' coverage.out > coverage_filtered.out
+          total=$(go tool cover -func=coverage_filtered.out | awk '/^total:/ {print substr($3, 1, length($3)-1)}')
+          echo "Total coverage (excl. generated): ${total}% (floor: ${COVERAGE_MIN}%)"
+          awk "BEGIN{ exit !(${total} >= ${COVERAGE_MIN}) }" || {
+            echo "::error::coverage ${total}% is below the ${COVERAGE_MIN}% floor";
+            exit 1;
+          }
+
+      - name: Upload coverage to Codecov
+        if: ${{ always() && hashFiles('coverage.out') != '' }}
+        uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f # v7.0.0
+        with:
+          files: coverage.out
+          flags: unittests
+          name: maintainerd-auth
+          fail_ci_if_error: true
+          token: ${{ secrets.CODECOV_TOKEN }}
+
+      - name: Fail if tests failed
+        if: ${{ steps.unit-tests.outcome == 'failure' }}
+        run: exit 1
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # Lint — static analysis with golangci-lint
+  # ─────────────────────────────────────────────────────────────────────────────
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Go
+        uses: actions/setup-go@44694675825211faa026b3c33043df3e48a5fa00 # v6.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Run golangci-lint
+        uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
+        with:
+          version: v2.11.4
+          args: --timeout=5m
+
+      - name: Run go vet
+        run: go vet ./...
+
+      - name: Run staticcheck
+        run: |
+          go install honnef.co/go/tools/cmd/staticcheck@v0.7.0
+          staticcheck ./...
+
+      - name: Run gosec
+        run: |
+          go install github.com/securego/gosec/v2/cmd/gosec@v2.22.8
+          # G101: false-positive "hardcoded credentials" on constant names.
+          # G115: int->int32 overflow on bounded pagination/port/retry values
+          #       (page/limit/totalPages, port, max_retries) mapped to proto
+          #       int32 fields — noisy and not a real overflow risk here.
+          gosec -exclude=G101,G115 -exclude-dir=internal/platform/gen ./...
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # Build — ensure the binary compiles cleanly
+  # ─────────────────────────────────────────────────────────────────────────────
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Go
+        uses: actions/setup-go@44694675825211faa026b3c33043df3e48a5fa00 # v6.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Build binary
+        run: go build -v -o /dev/null ./cmd/server
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # Docker image — build the all-in-one image (backend + console + identity) so
+  # a broken Dockerfile / frontend build is caught on every PR, not at release.
+  # Single-arch, no push; release.yml handles multi-arch publishing on tags.
+  # ─────────────────────────────────────────────────────────────────────────────
+  docker-image:
+    name: Docker image
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@e468171a9de216ec08956ac3ada2f0791b6bd435 # v3
+
+      - name: Build all-in-one image
+        uses: docker/build-push-action@263435318d21b8e681c14492fe198d362a7d2c83 # v6
+        with:
+          context: .
+          push: false
+          build-args: |
+            VERSION=ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # Frontend — the CI the console + identity repos carried before they were
+  # consolidated into web/: lint, unit tests (vitest) with coverage, a
+  # production-dependency audit, and a type-check + build. One matrix over both.
+  # ─────────────────────────────────────────────────────────────────────────────
+  frontend:
+    name: Frontend (${{ matrix.app }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        app: [console, identity]
+    defaults:
+      run:
+        working-directory: web/${{ matrix.app }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: web/${{ matrix.app }}/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Unit tests (coverage)
+        run: npm run test:cov
+
+      - name: Audit production dependencies
+        run: npm audit --omit=dev --audit-level=high
+
+      - name: Type-check and build
+        run: npm run build

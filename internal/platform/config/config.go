@@ -1,0 +1,401 @@
+package config
+
+import (
+	"fmt"
+	"log/slog"
+	"strings"
+	"time"
+
+	"github.com/joho/godotenv"
+)
+
+// Package-level configuration variables are populated exactly once by Init()
+// at application startup and are read-only thereafter. Tests that need to
+// override values should use t.Setenv before calling Init() or manipulate
+// the exported vars directly via a test helper.
+var (
+	// APP
+	AppEnv             string // "development" or "production"; defaults "development"
+	AppVersion         string
+	AppPublicHostname  string
+	AppPrivateHostname string
+	ManagementPort     string // MANAGEMENT_PORT; default ":8082"
+	GRPCTLSCertFile    string
+	GRPCTLSKeyFile     string
+	GRPCClientCAFile   string
+	// GRPCRequireMTLS is forced TRUE whenever ControlPlaneEnabled is set — see the
+	// control-plane block in Init. GRPC_REQUIRE_MTLS is only consulted for the
+	// non-control-plane listener.
+	GRPCRequireMTLS bool
+
+	// SetupBootstrapToken (SETUP_BOOTSTRAP_TOKEN) is the per-instance bootstrap
+	// credential that gates the gRPC SetupService (system-tenant/admin/
+	// control-service provisioning by core). Empty disables gRPC setup entirely —
+	// standalone instances bootstrap via the REST setup wizard instead.
+	//
+	// Its spent/unspent state is NOT tracked separately. Whether this instance has
+	// been bootstrapped is already recorded, durably and across replicas, by the
+	// existence of an active system tenant — which ensureSetupOpen reads directly
+	// and the single-system-tenant constraint settles under a race. A second copy
+	// of that fact could only drift from it. The window is additionally bounded by
+	// SetupWindowTTL. Never log this value.
+	SetupBootstrapToken string
+
+	// SetupWindowTTL (SETUP_WINDOW_TTL) bounds how long the orchestrator setup
+	// surface stays reachable after this process starts.
+	//
+	// Orchestrated setup spans many calls, so the window cannot close on the first
+	// write the way the REST wizard's does — which leaves it open across the whole
+	// provisioning sequence. If the orchestrator dies halfway, that is a door onto
+	// tenant, client and policy creation that never shuts. The TTL makes an
+	// abandoned provision fail closed on its own; re-provisioning is a restart.
+	SetupWindowTTL time.Duration
+
+	// Application Encryption Key (AES-256)
+	AppEncryptionKey []byte
+
+	// AppEncryptionPreviousKeys are DECRYPT-ONLY keys retired by a rotation.
+	// Ciphertext carries the id of the key that produced it, so during a rotation the
+	// old key stays here until every row has been re-encrypted with the new one.
+	// Without this, rotating APP_ENCRYPTION_KEY makes every stored secret
+	// undecryptable. Set APP_ENCRYPTION_KEYS_PREVIOUS to a comma-separated list.
+	AppEncryptionPreviousKeys [][]byte
+
+	// Logging
+	LogLevel string // "debug", "info", "warn", "error"; defaults "info"
+
+	// FRONTEND
+	// These hold the SYSTEM-tenant frontend hosts (e.g. auth.maintainerd.local
+	// and console.auth.maintainerd.local). Multi-tenancy is subdomain-based: the
+	// tenant name is the DNS slug, so a regular tenant "acme" is served from
+	// acme.auth.maintainerd.local / acme.console.auth.maintainerd.local while the
+	// system tenant uses the bare host. Per-tenant URLs are derived via
+	// shared.FrontendURL, which normalizes any scheme to https; do not build
+	// tenant hosts by string-concatenating these values directly.
+	AppFrontendIdentityHostname string
+	AppFrontendConsoleHostname  string
+
+	// JWT Configuration
+	JWTPrivateKey               []byte
+	JWTPublicKey                []byte
+	JWTKeyRotationPeriodSeconds int
+	SecretRefreshPeriodSeconds  int
+
+	// HMAC Secret for signed URLs
+	HMACSecretKey []byte
+
+	// Secret Management
+	SecretProvider string // "env", "aws_ssm", "aws_secrets", "vault", "azure_kv"
+	SecretPrefix   string // Prefix for secret names in external providers
+
+	// DB Config
+	DBHost     string
+	DBPort     string
+	DBUser     string
+	DBPassword string
+	DBName     string
+	DBSSLMode  string
+
+	// DB Pool Config
+	DBMaxOpenConns       int // DB_MAX_OPEN_CONNS; default 25
+	DBMaxIdleConns       int // DB_MAX_IDLE_CONNS; default 10
+	DBConnMaxLifetimeSec int // DB_CONN_MAX_LIFETIME_SEC; default 300
+
+	// DB Statement Timeout
+	DBStatementTimeoutMs int // DB_STATEMENT_TIMEOUT_MS; default 30000
+
+	// Cookie Config
+	CookieSecure   bool   // defaults true; set COOKIE_SECURE=false for local dev
+	CookieSameSite string // "strict", "lax", or "none"; defaults "lax"
+	// CookieDomain scopes auth cookies to a shared parent domain so every
+	// FIRST-PARTY surface under it (identity, console, and any app the operator
+	// hosts there) shares one session — sign in once, sign out once. Empty means
+	// host-only, which keeps each surface's session independent.
+	//
+	// Setting this trades the __Host- prefix for __Secure-: __Host- forbids a
+	// Domain attribute by definition. Only set it for a domain whose subdomains
+	// you control, since any of them could then set a cookie for the parent.
+	// External relying parties live on other domains and are unaffected either
+	// way — they hold their own sessions and are logged out via OIDC, not cookies.
+	CookieDomain string
+)
+
+// Init loads all configuration from environment variables (and an optional .env file).
+// It returns an error for any missing required variable so that main() can decide
+// how to handle the failure — nothing in this package calls os.Exit.
+func Init() error {
+	// Load environment variables first (best-effort; not required in production)
+	if err := godotenv.Load(); err != nil {
+		slog.Warn("no .env file found, using system environment", "err", err)
+	}
+
+	// Secret management provider (optional with defaults)
+	SecretProvider = GetEnvOrDefault("SECRET_PROVIDER", "env")
+	SecretPrefix = GetEnvOrDefault("SECRET_PREFIX", "maintainerd/auth")
+
+	if err := ValidateSecretProvider(); err != nil {
+		return fmt.Errorf("secret provider validation failed: %w", err)
+	}
+
+	if err := initSecretManager(); err != nil {
+		return fmt.Errorf("failed to initialize secret manager: %w", err)
+	}
+
+	// App Config
+	// Secure by default: an unset APP_ENV resolves to "production", so a
+	// production image can never silently run with development-grade security
+	// (no HSTS, DB/gRPC TLS not enforced, plaintext secret stores, gRPC
+	// reflection on). Local work opts into the relaxed posture with
+	// APP_ENV=development, which the dev compose and quickstart .env already set.
+	AppEnv = GetEnvOrDefault("APP_ENV", "production")
+	var err error
+	// AppVersion may be injected at build time via -ldflags -X ...config.AppVersion.
+	// Precedence: APP_VERSION env (operator override) > build-injected value > "dev".
+	// It is intentionally NOT a required env var.
+	if v, verr := GetEnv("APP_VERSION"); verr == nil && v != "" {
+		AppVersion = v
+	} else if AppVersion == "" {
+		AppVersion = "dev"
+	}
+	if AppPublicHostname, err = GetEnv("APP_PUBLIC_HOSTNAME"); err != nil {
+		return err
+	}
+	if AppPrivateHostname, err = GetEnv("APP_PRIVATE_HOSTNAME"); err != nil {
+		return err
+	}
+	ManagementPort = normalizeListenAddr(GetEnvOrDefault("MANAGEMENT_PORT", "8082"))
+	GRPCTLSCertFile = GetEnvOrDefault("GRPC_TLS_CERT_FILE", "")
+	GRPCTLSKeyFile = GetEnvOrDefault("GRPC_TLS_KEY_FILE", "")
+	GRPCClientCAFile = GetEnvOrDefault("GRPC_CLIENT_CA_FILE", "")
+	GRPCRequireMTLS = strings.EqualFold(GetEnvOrDefault("GRPC_REQUIRE_MTLS", "false"), "true")
+
+	// Control plane. Off by default: the default deployment is STANDALONE, and a
+	// standalone IAM must not expose the machine surface an orchestrator drives.
+	ControlPlaneEnabled = strings.EqualFold(GetEnvOrDefault("CONTROL_PLANE_ENABLED", "false"), "true")
+	// The control plane needs a listener, so enabling it implies the listener.
+	// Requiring both to be set would make "I enabled the control plane and nothing
+	// listens" a supported state, which is only ever a misconfiguration.
+	GRPCEnabled = ControlPlaneEnabled || strings.EqualFold(GetEnvOrDefault("GRPC_ENABLED", "false"), "true")
+	if SetupWindowTTL, err = time.ParseDuration(GetEnvOrDefault("SETUP_WINDOW_TTL", "30m")); err != nil {
+		return fmt.Errorf("SETUP_WINDOW_TTL is not a valid duration: %w", err)
+	}
+	if SetupWindowTTL <= 0 {
+		// A non-positive TTL reads as "no limit", which is the state this setting
+		// exists to prevent. Disabling it has to be a deliberate, documented value,
+		// not a typo that silently removes the bound.
+		return fmt.Errorf("SETUP_WINDOW_TTL must be positive (got %s)", SetupWindowTTL)
+	}
+	if ControlPlaneEnabled {
+		// Not an operator choice. The channel that can create tenants, services and
+		// clients must PROVE its peer is core rather than accept a bearer token's
+		// claim to be, so enabling the control plane enables mTLS with it — leaving
+		// GRPC_REQUIRE_MTLS able to turn it back off would restore exactly the
+		// posture this removes.
+		GRPCRequireMTLS = true
+	}
+	if InstanceRole, err = resolveInstanceRole(GetEnvOrDefault("INSTANCE_ROLE", InstanceRoleSystem)); err != nil {
+		return err
+	}
+	if err := validateControlPlaneTLS(); err != nil {
+		return fmt.Errorf("control plane TLS configuration is invalid: %w", err)
+	}
+
+	// Credentials go through the configured secret provider, not os.Getenv, so
+	// an operator running SECRET_PROVIDER=vault/aws_secrets actually keeps them
+	// in that store. With the default SECRET_PROVIDER=env this is byte-identical
+	// to reading the environment variable, so the mixed model still works:
+	// non-sensitive config stays in plain env vars, credentials follow the
+	// provider.
+	if SetupBootstrapToken, err = LoadSecretStringOptional("SETUP_BOOTSTRAP_TOKEN"); err != nil {
+		return fmt.Errorf("failed to load setup bootstrap token: %w", err)
+	}
+
+	// Frontend Config
+	if AppFrontendIdentityHostname, err = GetEnv("APP_FRONTEND_IDENTITY_HOSTNAME"); err != nil {
+		return err
+	}
+	if AppFrontendConsoleHostname, err = GetEnv("APP_FRONTEND_CONSOLE_HOSTNAME"); err != nil {
+		return err
+	}
+
+	// JWT Config — loaded via the configured secret provider
+	slog.Info("Loading JWT keys from secret provider")
+	if JWTPrivateKey, err = loadSecret("JWT_PRIVATE_KEY"); err != nil {
+		return fmt.Errorf("failed to load JWT private key: %w", err)
+	}
+	if JWTPublicKey, err = loadSecret("JWT_PUBLIC_KEY"); err != nil {
+		return fmt.Errorf("failed to load JWT public key: %w", err)
+	}
+	slog.Info("JWT keys loaded successfully")
+	JWTKeyRotationPeriodSeconds = parseIntDefault(GetEnvOrDefault("JWT_KEY_ROTATION_PERIOD_SECONDS", "86400"), 86400)
+	SecretRefreshPeriodSeconds = parseIntDefault(GetEnvOrDefault("SECRET_REFRESH_PERIOD_SECONDS", "300"), 300)
+
+	// Application encryption key — loaded via the configured secret provider.
+	slog.Info("Loading application encryption key from secret provider")
+	var encErr error
+	AppEncryptionKey, encErr = loadSecret("APP_ENCRYPTION_KEY")
+	if encErr != nil {
+		return fmt.Errorf("failed to load APP_ENCRYPTION_KEY: %w", encErr)
+	}
+	if len(AppEncryptionKey) != 32 {
+		return fmt.Errorf("APP_ENCRYPTION_KEY must be 32 bytes (AES-256), got %d", len(AppEncryptionKey))
+	}
+
+	// Retired keys, kept only so data written before a rotation still decrypts.
+	AppEncryptionPreviousKeys = nil
+	previous, prevErr := LoadSecretStringOptional("APP_ENCRYPTION_KEYS_PREVIOUS")
+	if prevErr != nil {
+		return fmt.Errorf("failed to load previous encryption keys: %w", prevErr)
+	}
+	if previous != "" {
+		for _, entry := range strings.Split(previous, ",") {
+			key := []byte(strings.TrimSpace(entry))
+			if len(key) == 0 {
+				continue
+			}
+			if len(key) != 32 {
+				return fmt.Errorf("each APP_ENCRYPTION_KEYS_PREVIOUS entry must be 32 bytes (AES-256), got %d", len(key))
+			}
+			AppEncryptionPreviousKeys = append(AppEncryptionPreviousKeys, key)
+		}
+		slog.Info("Retired application encryption keys loaded", "count", len(AppEncryptionPreviousKeys))
+	}
+	slog.Info("Application encryption key loaded successfully")
+
+	// HMAC secret key for signed URLs — loaded via the configured secret provider.
+	slog.Info("Loading HMAC secret key from secret provider")
+	if HMACSecretKey, err = loadSecret("HMAC_SECRET_KEY"); err != nil {
+		return fmt.Errorf("failed to load HMAC_SECRET_KEY: %w", err)
+	}
+	slog.Info("HMAC secret key loaded successfully")
+
+	// DB Config
+	if DBHost, err = GetEnv("DB_HOST"); err != nil {
+		return err
+	}
+	if DBPort, err = GetEnv("DB_PORT"); err != nil {
+		return err
+	}
+	if DBUser, err = GetEnv("DB_USER"); err != nil {
+		return err
+	}
+	if DBPassword, err = LoadSecretString("DB_PASSWORD"); err != nil {
+		return fmt.Errorf("failed to load database password: %w", err)
+	}
+	if DBName, err = GetEnv("DB_NAME"); err != nil {
+		return err
+	}
+	DBSSLMode = GetEnvOrDefault("DB_SSLMODE", "disable")
+	DBMaxOpenConns = parseIntDefault(GetEnvOrDefault("DB_MAX_OPEN_CONNS", "25"), 25)
+	DBMaxIdleConns = parseIntDefault(GetEnvOrDefault("DB_MAX_IDLE_CONNS", "10"), 10)
+	DBConnMaxLifetimeSec = parseIntDefault(GetEnvOrDefault("DB_CONN_MAX_LIFETIME_SEC", "300"), 300)
+	DBStatementTimeoutMs = parseIntDefault(GetEnvOrDefault("DB_STATEMENT_TIMEOUT_MS", "30000"), 30000)
+
+	// Cookie Config
+	CookieSecure = GetEnvOrDefault("COOKIE_SECURE", "true") != "false"
+	CookieSameSite = GetEnvOrDefault("COOKIE_SAMESITE", "lax")
+	CookieDomain = strings.TrimSpace(GetEnvOrDefault("COOKIE_DOMAIN", ""))
+
+	// Logging
+	LogLevel = GetEnvOrDefault("LOG_LEVEL", "info")
+
+	return nil
+}
+
+type Config struct {
+	AppEnv              string
+	AppVersion          string
+	AppPublicHostname   string
+	AppPrivateHostname  string
+	ManagementPort      string
+	GRPCTLSCertFile     string
+	GRPCTLSKeyFile      string
+	GRPCClientCAFile    string
+	GRPCRequireMTLS     bool
+	ControlPlaneEnabled bool
+	InstanceRole        string
+	// SetupBootstrapToken is the raw credential; it is carried here only because
+	// GetConfig is a snapshot of the package vars. Do not log a Config value.
+	SetupBootstrapToken string
+	AppEncryptionKey    []byte
+
+	LogLevel string
+
+	AppFrontendIdentityHostname string
+	AppFrontendConsoleHostname  string
+
+	JWTPrivateKey               []byte
+	JWTPublicKey                []byte
+	JWTKeyRotationPeriodSeconds int
+	SecretRefreshPeriodSeconds  int
+	HMACSecretKey               []byte
+
+	SecretProvider string
+	SecretPrefix   string
+
+	DBHost     string
+	DBPort     string
+	DBUser     string
+	DBPassword string
+	DBName     string
+	DBSSLMode  string
+
+	DBMaxOpenConns       int
+	DBMaxIdleConns       int
+	DBConnMaxLifetimeSec int
+	DBStatementTimeoutMs int
+
+	CookieSecure   bool
+	CookieSameSite string
+}
+
+func GetConfig() Config {
+	return Config{
+		AppEnv:                      AppEnv,
+		AppVersion:                  AppVersion,
+		AppPublicHostname:           AppPublicHostname,
+		AppPrivateHostname:          AppPrivateHostname,
+		ManagementPort:              ManagementPort,
+		GRPCTLSCertFile:             GRPCTLSCertFile,
+		GRPCTLSKeyFile:              GRPCTLSKeyFile,
+		GRPCClientCAFile:            GRPCClientCAFile,
+		GRPCRequireMTLS:             GRPCRequireMTLS,
+		ControlPlaneEnabled:         ControlPlaneEnabled,
+		InstanceRole:                InstanceRole,
+		SetupBootstrapToken:         SetupBootstrapToken,
+		AppEncryptionKey:            AppEncryptionKey,
+		LogLevel:                    LogLevel,
+		AppFrontendIdentityHostname: AppFrontendIdentityHostname,
+		AppFrontendConsoleHostname:  AppFrontendConsoleHostname,
+		JWTPrivateKey:               JWTPrivateKey,
+		JWTPublicKey:                JWTPublicKey,
+		JWTKeyRotationPeriodSeconds: JWTKeyRotationPeriodSeconds,
+		SecretRefreshPeriodSeconds:  SecretRefreshPeriodSeconds,
+		HMACSecretKey:               HMACSecretKey,
+		SecretProvider:              SecretProvider,
+		SecretPrefix:                SecretPrefix,
+		DBHost:                      DBHost,
+		DBPort:                      DBPort,
+		DBUser:                      DBUser,
+		DBPassword:                  DBPassword,
+		DBName:                      DBName,
+		DBSSLMode:                   DBSSLMode,
+		DBMaxOpenConns:              DBMaxOpenConns,
+		DBMaxIdleConns:              DBMaxIdleConns,
+		DBConnMaxLifetimeSec:        DBConnMaxLifetimeSec,
+		DBStatementTimeoutMs:        DBStatementTimeoutMs,
+		CookieSecure:                CookieSecure,
+		CookieSameSite:              CookieSameSite,
+	}
+}
+
+func normalizeListenAddr(port string) string {
+	port = strings.TrimSpace(port)
+	if port == "" {
+		return ""
+	}
+	if strings.Contains(port, ":") {
+		return port
+	}
+	return ":" + port
+}
