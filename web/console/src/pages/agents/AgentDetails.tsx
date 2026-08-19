@@ -35,6 +35,7 @@ export default function AgentDetails() {
       <FormPageHeader
         backUrl="/agents"
         backLabel="Back to agents"
+        breadcrumbs={[{ label: 'Agents', to: '/agents' }, { label: agent.name }]}
         title={agent.name}
         description={agent.endpoint || ''}
         headerActions={

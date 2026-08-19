@@ -35,6 +35,7 @@ export default function ServiceDetails() {
       <FormPageHeader
         backUrl="/services"
         backLabel="Back to services"
+        breadcrumbs={[{ label: 'Services', to: '/services' }, { label: service.name }]}
         title={service.name}
         description={service.kind}
         showSystemBadge={service.is_system}

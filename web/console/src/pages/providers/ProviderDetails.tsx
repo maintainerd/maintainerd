@@ -35,6 +35,7 @@ export default function ProviderDetails() {
       <FormPageHeader
         backUrl="/providers"
         backLabel="Back to providers"
+        breadcrumbs={[{ label: 'Providers', to: '/providers' }, { label: provider.name }]}
         title={provider.name}
         description={`${provider.driver} · ${provider.resource_kind}`}
         headerActions={

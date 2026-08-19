@@ -9,11 +9,14 @@ import { ArrowLeft, Shield } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { Alert, AlertDescription } from "@/components/ui/alert"
+import { Breadcrumbs, type Crumb } from "@/components/layout/Breadcrumbs"
 
 interface FormPageHeaderProps {
   // Navigation
   backUrl: string
   backLabel?: string
+  // Optional breadcrumb trail shown above the back button for orientation.
+  breadcrumbs?: Crumb[]
   // Optional override for the back action (e.g. an unsaved-changes guard).
   // When provided it replaces the default navigate(backUrl).
   onBack?: () => void
@@ -38,6 +41,7 @@ interface FormPageHeaderProps {
 export function FormPageHeader({
   backUrl,
   backLabel = "Back",
+  breadcrumbs,
   onBack,
   title,
   description,
@@ -52,6 +56,8 @@ export function FormPageHeader({
 
   return (
     <>
+      {breadcrumbs && breadcrumbs.length > 0 && <Breadcrumbs items={breadcrumbs} className="mb-1" />}
+
       {/* Back Button */}
       <div>
         <Button

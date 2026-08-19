@@ -10,8 +10,9 @@ import {
 } from "@/components/ui/dropdown-menu"
 import { SidebarTrigger } from "@/components/ui/sidebar"
 import { CoreTenantSwitcher } from "@/components/navigation/CoreTenantSwitcher"
+import { BrandMark, BrandLogo } from "@/components/brand/BrandMark"
+import { branding } from "@/lib/branding"
 import {
-  Boxes,
   Building2,
   Cpu,
   FolderKanban,
@@ -52,14 +53,11 @@ export function AppTopNav() {
         <button
           type="button"
           onClick={() => navigate("/dashboard")}
-          className="flex items-center gap-2"
-          aria-label="maintainerd home"
+          className="flex items-center"
+          aria-label={`${branding.name} home`}
         >
-          <Boxes className="size-6 shrink-0 text-white" />
-          <span className="hidden md:inline">
-            <span className="text-lg font-semibold leading-none text-white">maintainerd</span>
-            <span className="ml-2 text-[11px] uppercase tracking-wide text-slate-400">Console</span>
-          </span>
+          <BrandMark size={26} wordmarkClassName="text-white" className="hidden md:flex" />
+          <BrandLogo size={26} className="md:hidden" />
         </button>
         <div className="ml-4 hidden items-center gap-2 sm:flex">
           <CoreTenantSwitcher />

@@ -37,6 +37,12 @@ export default function ResourceDetails() {
       <FormPageHeader
         backUrl={`/projects/${resource.project_uuid}`}
         backLabel="Back to project"
+        breadcrumbs={[
+          { label: 'Projects', to: '/projects' },
+          { label: 'Project', to: `/projects/${resource.project_uuid}` },
+          { label: 'Resources' },
+          { label: resource.name },
+        ]}
         title={resource.name}
         description={resource.kind}
         headerActions={

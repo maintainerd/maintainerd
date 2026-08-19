@@ -39,6 +39,7 @@ export default function TenantDetails() {
       <FormPageHeader
         backUrl="/tenants"
         backLabel="Back to tenants"
+        breadcrumbs={[{ label: 'Tenants', to: '/tenants' }, { label: tenant.display_name || tenant.name }]}
         title={tenant.display_name || tenant.name}
         description={tenant.name}
         showSystemBadge={tenant.is_system}

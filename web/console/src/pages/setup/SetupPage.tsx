@@ -1,6 +1,6 @@
 import { useForm } from 'react-hook-form'
 import { useNavigate } from 'react-router-dom'
-import { Boxes } from 'lucide-react'
+import { BrandLogo } from '@/components/brand/BrandMark'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { FormInputField, FormPasswordField } from '@/components/form'
 import FormSubmitButton from '@/components/form/FormSubmitButton'
@@ -66,7 +66,7 @@ export default function SetupPage() {
     <div className="flex min-h-svh items-center justify-center bg-background px-4 py-10">
       <div className="w-full max-w-lg space-y-6">
         <div className="flex flex-col items-center gap-2 text-center">
-          <Boxes className="size-10 text-foreground" />
+          <BrandLogo size={44} />
           <h1 className="text-2xl font-semibold tracking-tight">Set up maintainerd</h1>
           <p className="max-w-md text-sm text-muted-foreground">
             Create the system tenant and your administrator. Core configures the rest —

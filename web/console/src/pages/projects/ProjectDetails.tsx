@@ -35,6 +35,7 @@ export default function ProjectDetails() {
       <FormPageHeader
         backUrl="/projects"
         backLabel="Back to projects"
+        breadcrumbs={[{ label: 'Projects', to: '/projects' }, { label: project.display_name || project.name }]}
         title={project.display_name || project.name}
         description={project.description || project.name}
         headerActions={
