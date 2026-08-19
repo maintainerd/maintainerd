@@ -149,46 +149,6 @@ func TestInit(t *testing.T) {
 		assert.Contains(t, err.Error(), "APP_PRIVATE_HOSTNAME")
 	})
 
-	t.Run("missing ACCOUNT_HOSTNAME", func(t *testing.T) {
-		saveGlobals(t)
-		setRequiredEnv(t)
-		t.Setenv("APP_FRONTEND_IDENTITY_HOSTNAME", "")
-
-		err := Init()
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "APP_FRONTEND_IDENTITY_HOSTNAME")
-	})
-
-	t.Run("missing AUTH_HOSTNAME", func(t *testing.T) {
-		saveGlobals(t)
-		setRequiredEnv(t)
-		t.Setenv("APP_FRONTEND_CONSOLE_HOSTNAME", "")
-
-		err := Init()
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "APP_FRONTEND_CONSOLE_HOSTNAME")
-	})
-
-	t.Run("missing JWT_PRIVATE_KEY", func(t *testing.T) {
-		saveGlobals(t)
-		setRequiredEnv(t)
-		t.Setenv("JWT_PRIVATE_KEY", "")
-
-		err := Init()
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "JWT private key")
-	})
-
-	t.Run("missing JWT_PUBLIC_KEY", func(t *testing.T) {
-		saveGlobals(t)
-		setRequiredEnv(t)
-		t.Setenv("JWT_PUBLIC_KEY", "")
-
-		err := Init()
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "JWT public key")
-	})
-
 	t.Run("missing DB_HOST", func(t *testing.T) {
 		saveGlobals(t)
 		setRequiredEnv(t)
@@ -256,26 +216,6 @@ func TestInit(t *testing.T) {
 		err := Init()
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "APP_ENCRYPTION_KEY must be 32 bytes")
-	})
-
-	t.Run("missing APP_ENCRYPTION_KEY", func(t *testing.T) {
-		saveGlobals(t)
-		setRequiredEnv(t)
-		t.Setenv("APP_ENCRYPTION_KEY", "")
-
-		err := Init()
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "APP_ENCRYPTION_KEY")
-	})
-
-	t.Run("missing HMAC_SECRET_KEY", func(t *testing.T) {
-		saveGlobals(t)
-		setRequiredEnv(t)
-		t.Setenv("HMAC_SECRET_KEY", "")
-
-		err := Init()
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "HMAC_SECRET_KEY")
 	})
 }
 

@@ -210,64 +210,41 @@ func Init() error {
 		return fmt.Errorf("failed to load setup bootstrap token: %w", err)
 	}
 
-	// Frontend Config
-	if AppFrontendIdentityHostname, err = GetEnv("APP_FRONTEND_IDENTITY_HOSTNAME"); err != nil {
-		return err
-	}
-	if AppFrontendConsoleHostname, err = GetEnv("APP_FRONTEND_CONSOLE_HOSTNAME"); err != nil {
-		return err
-	}
+	// Frontend Config (optional — auth-era; unused by the core control plane).
+	AppFrontendIdentityHostname = GetEnvOrDefault("APP_FRONTEND_IDENTITY_HOSTNAME", "")
+	AppFrontendConsoleHostname = GetEnvOrDefault("APP_FRONTEND_CONSOLE_HOSTNAME", "")
 
-	// JWT Config — loaded via the configured secret provider
-	slog.Info("Loading JWT keys from secret provider")
-	if JWTPrivateKey, err = loadSecret("JWT_PRIVATE_KEY"); err != nil {
-		return fmt.Errorf("failed to load JWT private key: %w", err)
+	// JWT / encryption / HMAC are OPTIONAL for the core control plane. They were
+	// required by the auth-derived config, but core does not issue JWTs, encrypt
+	// at rest, or sign URLs. They load only if an operator sets them (still via
+	// SECRET_PROVIDER); otherwise they stay empty and unused.
+	if v, jwtErr := LoadSecretStringOptional("JWT_PRIVATE_KEY"); jwtErr != nil {
+		return fmt.Errorf("failed to load JWT private key: %w", jwtErr)
+	} else {
+		JWTPrivateKey = []byte(v)
 	}
-	if JWTPublicKey, err = loadSecret("JWT_PUBLIC_KEY"); err != nil {
-		return fmt.Errorf("failed to load JWT public key: %w", err)
+	if v, jwtErr := LoadSecretStringOptional("JWT_PUBLIC_KEY"); jwtErr != nil {
+		return fmt.Errorf("failed to load JWT public key: %w", jwtErr)
+	} else {
+		JWTPublicKey = []byte(v)
 	}
-	slog.Info("JWT keys loaded successfully")
 	JWTKeyRotationPeriodSeconds = parseIntDefault(GetEnvOrDefault("JWT_KEY_ROTATION_PERIOD_SECONDS", "86400"), 86400)
 	SecretRefreshPeriodSeconds = parseIntDefault(GetEnvOrDefault("SECRET_REFRESH_PERIOD_SECONDS", "300"), 300)
 
-	// Application encryption key — loaded via the configured secret provider.
-	slog.Info("Loading application encryption key from secret provider")
-	var encErr error
-	AppEncryptionKey, encErr = loadSecret("APP_ENCRYPTION_KEY")
-	if encErr != nil {
+	if v, encErr := LoadSecretStringOptional("APP_ENCRYPTION_KEY"); encErr != nil {
 		return fmt.Errorf("failed to load APP_ENCRYPTION_KEY: %w", encErr)
-	}
-	if len(AppEncryptionKey) != 32 {
-		return fmt.Errorf("APP_ENCRYPTION_KEY must be 32 bytes (AES-256), got %d", len(AppEncryptionKey))
-	}
-
-	// Retired keys, kept only so data written before a rotation still decrypts.
-	AppEncryptionPreviousKeys = nil
-	previous, prevErr := LoadSecretStringOptional("APP_ENCRYPTION_KEYS_PREVIOUS")
-	if prevErr != nil {
-		return fmt.Errorf("failed to load previous encryption keys: %w", prevErr)
-	}
-	if previous != "" {
-		for _, entry := range strings.Split(previous, ",") {
-			key := []byte(strings.TrimSpace(entry))
-			if len(key) == 0 {
-				continue
-			}
-			if len(key) != 32 {
-				return fmt.Errorf("each APP_ENCRYPTION_KEYS_PREVIOUS entry must be 32 bytes (AES-256), got %d", len(key))
-			}
-			AppEncryptionPreviousKeys = append(AppEncryptionPreviousKeys, key)
+	} else if v != "" {
+		AppEncryptionKey = []byte(v)
+		if len(AppEncryptionKey) != 32 {
+			return fmt.Errorf("APP_ENCRYPTION_KEY must be 32 bytes (AES-256), got %d", len(AppEncryptionKey))
 		}
-		slog.Info("Retired application encryption keys loaded", "count", len(AppEncryptionPreviousKeys))
 	}
-	slog.Info("Application encryption key loaded successfully")
 
-	// HMAC secret key for signed URLs — loaded via the configured secret provider.
-	slog.Info("Loading HMAC secret key from secret provider")
-	if HMACSecretKey, err = loadSecret("HMAC_SECRET_KEY"); err != nil {
-		return fmt.Errorf("failed to load HMAC_SECRET_KEY: %w", err)
+	if v, hmacErr := LoadSecretStringOptional("HMAC_SECRET_KEY"); hmacErr != nil {
+		return fmt.Errorf("failed to load HMAC_SECRET_KEY: %w", hmacErr)
+	} else {
+		HMACSecretKey = []byte(v)
 	}
-	slog.Info("HMAC secret key loaded successfully")
 
 	// DB Config
 	if DBHost, err = GetEnv("DB_HOST"); err != nil {
