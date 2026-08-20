@@ -15,8 +15,12 @@ import (
 	"github.com/maintainerd/core/internal/app"
 )
 
-// Router builds the core HTTP API.
-func Router(a *app.App) http.Handler {
+// Router builds the core HTTP API. authMW, when non-nil, is the system-Auth
+// (IAM) enforcement point — the SDK's token verifier middleware — applied to the
+// data-plane routes. The setup routes stay open because they run before any
+// token can exist. When authMW is nil (no AUTH_JWKS_URL configured), the API is
+// ungated: the current dev default, so wiring the gate is purely additive.
+func Router(a *app.App, authMW func(http.Handler) http.Handler) http.Handler {
 	r := chi.NewRouter()
 	r.Use(middleware.RequestID)
 	r.Use(middleware.Recoverer)
@@ -28,13 +32,22 @@ func Router(a *app.App) http.Handler {
 	})
 
 	r.Route("/api/v1", func(r chi.Router) {
-		r.Mount("/tenants", a.Tenant.Routes())
-		r.Mount("/projects", a.Project.Routes())
-		r.Mount("/services", a.Service.Routes())
-		r.Mount("/providers", a.Provider.Routes())
-		r.Mount("/agents", a.Agent.Routes())
-		r.Mount("/resources", a.Resource.Routes())
+		// Setup is pre-auth: it provisions identity before any token exists, so
+		// it must never sit behind the token gate.
 		r.Mount("/setup", a.Setup.Routes())
+
+		// The data plane is governed by system Auth (IAM) when a gate is wired.
+		r.Group(func(r chi.Router) {
+			if authMW != nil {
+				r.Use(authMW)
+			}
+			r.Mount("/tenants", a.Tenant.Routes())
+			r.Mount("/projects", a.Project.Routes())
+			r.Mount("/services", a.Service.Routes())
+			r.Mount("/providers", a.Provider.Routes())
+			r.Mount("/agents", a.Agent.Routes())
+			r.Mount("/resources", a.Resource.Routes())
+		})
 	})
 
 	return r

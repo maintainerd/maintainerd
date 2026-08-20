@@ -4,12 +4,15 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"os"
 	"os/signal"
 	"strings"
 	"syscall"
 
 	"golang.org/x/sync/errgroup"
+
+	sdkauth "github.com/maintainerd/sdk/auth"
 
 	"github.com/maintainerd/core/internal/app"
 	"github.com/maintainerd/core/internal/grpcserver"
@@ -79,14 +82,40 @@ func run(parent context.Context) error {
 		go application.SetupOrch.RunWithRetry(ctx)
 	}
 
+	// Build the system-Auth (IAM) gate from the SDK verifier. Additive: nil when
+	// AUTH_JWKS_URL is unset, leaving the REST API ungated (the dev default).
+	authMW, err := buildAuthGate(ctx)
+	if err != nil {
+		return err
+	}
+
 	// Serve the HTTP REST API and the core.v1 AgentGateway gRPC concurrently.
 	// If either fails, the group context cancels and the other drains.
 	g, gctx := errgroup.WithContext(ctx)
-	g.Go(func() error { return appserver.StartRESTServer(gctx, appserver.Router(application)) })
+	g.Go(func() error { return appserver.StartRESTServer(gctx, appserver.Router(application, authMW)) })
 	g.Go(func() error {
 		return grpcserver.Serve(gctx, grpcListenAddr(), application.AgentSvc, application.ResourceSvc)
 	})
 	return g.Wait()
+}
+
+// buildAuthGate constructs the system-Auth (IAM) enforcement middleware from the
+// SDK's token verifier when AUTH_JWKS_URL is set. The verifier validates incoming
+// bearer tokens against Auth's public JWKS (optionally checking issuer/audience).
+// When AUTH_JWKS_URL is unset it returns nil and the REST API stays ungated — the
+// current dev default — so enabling the gate is a config-only change.
+func buildAuthGate(ctx context.Context) (func(http.Handler) http.Handler, error) {
+	jwksURL := os.Getenv("AUTH_JWKS_URL")
+	if jwksURL == "" {
+		slog.Warn("AUTH_JWKS_URL not set — REST API running without a system-Auth gate")
+		return nil, nil
+	}
+	v, err := sdkauth.NewVerifier(ctx, jwksURL, os.Getenv("AUTH_ISSUER"), os.Getenv("AUTH_AUDIENCE"))
+	if err != nil {
+		return nil, fmt.Errorf("initialize system-Auth verifier: %w", err)
+	}
+	slog.Info("system-Auth (IAM) gate enabled on the REST API", "jwks_url", jwksURL)
+	return v.Middleware, nil
 }
 
 // grpcListenAddr resolves the AgentGateway gRPC listen address (GRPC_PORT, default :8081).
