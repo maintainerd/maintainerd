@@ -73,6 +73,9 @@ export function CoreTenantProvider({ children }: { children: ReactNode }) {
   return <CoreTenantContext.Provider value={value}>{children}</CoreTenantContext.Provider>
 }
 
+// Provider + hook are intentionally co-located; the hook is this file's only
+// non-component export, so opt out of the dev-only fast-refresh lint rule here.
+// eslint-disable-next-line react-refresh/only-export-components
 export function useCoreTenant(): CoreTenantContextValue {
   const ctx = useContext(CoreTenantContext)
   if (!ctx) throw new Error('useCoreTenant must be used within a CoreTenantProvider')

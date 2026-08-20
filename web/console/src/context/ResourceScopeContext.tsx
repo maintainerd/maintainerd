@@ -12,6 +12,9 @@ export function ResourceScopeProvider({ projectUuid, children }: { projectUuid: 
   return <ResourceScopeContext.Provider value={{ projectUuid }}>{children}</ResourceScopeContext.Provider>
 }
 
+// Provider + hook are intentionally co-located; the hook is this file's only
+// non-component export, so opt out of the dev-only fast-refresh lint rule here.
+// eslint-disable-next-line react-refresh/only-export-components
 export function useResourceScope(): ResourceScopeValue {
   const ctx = useContext(ResourceScopeContext)
   if (!ctx) throw new Error('useResourceScope must be used within a ResourceScopeProvider')
