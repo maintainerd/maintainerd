@@ -21,6 +21,17 @@ CREATE TABLE IF NOT EXISTS resources (
     status              JSONB NOT NULL DEFAULT '{}',
     generation          BIGINT NOT NULL DEFAULT 1,
     observed_generation BIGINT NOT NULL DEFAULT 0,
+    -- Dispatch lease: PullWork stamps leased_until when it hands the row to an
+    -- agent, so the same item is not re-dispatched (to this or another agent)
+    -- until the lease expires or a status report releases it. This is what makes
+    -- work delivery at-most-once-at-a-time without a proto change.
+    leased_until        TIMESTAMPTZ,
+    -- Retry budget: failed convergence attempts back off exponentially
+    -- (next_attempt_at) instead of hot-looping the agent against a broken spec;
+    -- once attempts exhausts the budget the row parks as state='failed' until a
+    -- spec change resets it. Fail-closed: a poisoned spec cannot starve the feed.
+    attempts            INT NOT NULL DEFAULT 0,
+    next_attempt_at     TIMESTAMPTZ,
     metadata            JSONB NOT NULL DEFAULT '{}',
     created_by          BIGINT,
     updated_by          BIGINT,
@@ -37,8 +48,11 @@ CREATE INDEX IF NOT EXISTS idx_resources_agent_id ON resources (agent_id);
 CREATE INDEX IF NOT EXISTS idx_resources_owner_resource_id ON resources (owner_resource_id);
 CREATE INDEX IF NOT EXISTS idx_resources_kind ON resources (kind);
 CREATE INDEX IF NOT EXISTS idx_resources_state ON resources (state);
--- The reconciler's hot query: rows whose observed state is behind their desired spec.
-CREATE INDEX IF NOT EXISTS idx_resources_out_of_sync ON resources (state) WHERE observed_generation < generation AND deleted_at IS NULL;
+-- The reconciler's hot query: rows whose observed state is behind their desired
+-- spec, plus teardown ('deleting') and retryable-failure ('error') rows — the
+-- lease/backoff time gates are volatile and are applied by the query itself.
+CREATE INDEX IF NOT EXISTS idx_resources_out_of_sync ON resources (state)
+    WHERE (observed_generation < generation OR state IN ('deleting', 'error')) AND deleted_at IS NULL;
 CREATE INDEX IF NOT EXISTS idx_resources_spec ON resources USING GIN (spec);
 CREATE INDEX IF NOT EXISTS idx_resources_metadata ON resources USING GIN (metadata);
 CREATE INDEX IF NOT EXISTS idx_resources_created_at ON resources (created_at);

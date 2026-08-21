@@ -12,7 +12,29 @@ import (
 
 type Querier interface {
 	AgentHeartbeat(ctx context.Context, agentUuid uuid.UUID) (Agent, error)
+	// The gateway's single write path for agent status reports. The service layer
+	// computes the resulting state / attempts / backoff in Go; this statement
+	// applies them atomically and ALWAYS releases the dispatch lease (a report is
+	// the agent's answer for the leased item). observed_generation only moves
+	// forward (GREATEST) so a stale drift report can never rewind convergence
+	// progress; failure paths pass 0 to leave it untouched. `finalize` stamps
+	// deleted_at — the terminal step of the teardown protocol after an agent
+	// reports the workload removed.
+	ApplyAgentReport(ctx context.Context, arg ApplyAgentReportParams) (Resource, error)
 	AssignResourceAgent(ctx context.Context, arg AssignResourceAgentParams) (Resource, error)
+	// First authenticated Register wins: binds the verified token subject to the
+	// agent row. A Register presenting a DIFFERENT subject for an already-bound
+	// agent matches no rows, which the service surfaces as PermissionDenied — an
+	// enrolled agent identity can never be silently taken over by another
+	// principal that merely learned the agent's UUID.
+	BindAgentSubject(ctx context.Context, arg BindAgentSubjectParams) (Agent, error)
+	// PullWork's atomic claim. Feed rules match ListOutOfSyncResources, scoped to
+	// items already assigned to the calling agent OR unassigned (first claim is
+	// sticky: agent_id is stamped and later pulls by other agents skip the row).
+	// The FOR UPDATE SKIP LOCKED subselect + single UPDATE make it impossible for
+	// two concurrent agents to claim the same item; the lease keeps the item out
+	// of the feed until it expires or a status report releases it.
+	ClaimAgentWork(ctx context.Context, arg ClaimAgentWorkParams) ([]Resource, error)
 	CountAgentsByTenant(ctx context.Context, tenantID int64) (int64, error)
 	CountProjectsByTenant(ctx context.Context, tenantID int64) (int64, error)
 	CountProvidersByTenant(ctx context.Context, tenantID int64) (int64, error)
@@ -43,7 +65,13 @@ type Querier interface {
 	GetTenantByName(ctx context.Context, name string) (Tenant, error)
 	GetTenantByUUID(ctx context.Context, tenantUuid uuid.UUID) (Tenant, error)
 	ListAgentsByTenant(ctx context.Context, arg ListAgentsByTenantParams) ([]Agent, error)
-	// The reconciler's work feed: resources whose observed state lags their spec.
+	// The reconciler's work feed (read-only variant; the gateway uses ClaimAgentWork
+	// which additionally stamps the lease + agent assignment). A row is fed when:
+	//   * its observed state lags its spec, OR it is being torn down ('deleting'),
+	//     OR a prior attempt failed retryably ('error');
+	//   * it is not parked as 'failed' (budget exhausted — only a spec change
+	//     re-arms it);
+	//   * no dispatch lease is active and any retry backoff has elapsed.
 	ListOutOfSyncResources(ctx context.Context, limit int32) ([]Resource, error)
 	ListProjectsByTenant(ctx context.Context, arg ListProjectsByTenantParams) ([]Project, error)
 	ListProvidersByKind(ctx context.Context, arg ListProvidersByKindParams) ([]Provider, error)
@@ -54,17 +82,25 @@ type Querier interface {
 	// The platform's system services — the ones Core must keep running at all times.
 	ListSystemServices(ctx context.Context) ([]Service, error)
 	ListTenants(ctx context.Context, arg ListTenantsParams) ([]Tenant, error)
+	// Deletion is a desired-state change, not an immediate erase: the row flips to
+	// state='deleting' but keeps deleted_at NULL so it stays IN the work feed and
+	// PullWork ships it to its agent as a teardown envelope. Only the agent's
+	// "removed" report finalizes the delete (ApplyAgentReport with finalize) —
+	// otherwise the workload would keep running on the host with no record of it.
+	MarkResourceDeleting(ctx context.Context, resourceUuid uuid.UUID) error
 	SoftDeleteAgent(ctx context.Context, agentUuid uuid.UUID) error
 	SoftDeleteProject(ctx context.Context, projectUuid uuid.UUID) error
 	SoftDeleteProvider(ctx context.Context, providerUuid uuid.UUID) error
-	// Deletion is a desired-state change too: mark deleting so the reconciler can tear down.
-	SoftDeleteResource(ctx context.Context, resourceUuid uuid.UUID) error
 	SoftDeleteService(ctx context.Context, serviceUuid uuid.UUID) error
 	SoftDeleteTenant(ctx context.Context, tenantUuid uuid.UUID) error
 	UpdateAgentStatus(ctx context.Context, arg UpdateAgentStatusParams) (Agent, error)
 	UpdateProject(ctx context.Context, arg UpdateProjectParams) (Project, error)
 	UpdateProvider(ctx context.Context, arg UpdateProviderParams) (Provider, error)
 	// A spec change bumps generation and re-arms the reconciler (state -> pending).
+	// It also resets the retry budget (attempts/next_attempt_at): a resource parked
+	// as 'failed' after exhausting its budget gets a fresh budget only when its
+	// desired state actually changes — never by the failing spec being retried
+	// forever on its own.
 	UpdateResourceSpec(ctx context.Context, arg UpdateResourceSpecParams) (Resource, error)
 	// The reconciler writes observed state back, marking how far it has caught up.
 	UpdateResourceStatus(ctx context.Context, arg UpdateResourceStatusParams) (Resource, error)

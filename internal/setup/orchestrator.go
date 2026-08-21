@@ -9,9 +9,11 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -30,15 +32,53 @@ import (
 // setupTokenKey is the gRPC metadata header Auth reads the bootstrap token from.
 const setupTokenKey = "x-setup-token"
 
+// ErrSetupRunning is returned when a provisioning run is already in flight —
+// the single-flight guard that keeps the boot goroutine (RunWithRetry) and the
+// console wizard's POST from provisioning concurrently. Two interleaved runs
+// would double-create non-idempotent Auth objects and race each other's
+// control-plane persist, each overwriting the other's keypair.
+var ErrSetupRunning = errors.New("setup is already running")
+
+// controlPlaneStore is the slice of storage the orchestrator needs for the
+// control_plane singleton row. Narrowed to an interface so the security-
+// critical paths (keypair reuse, status slimming, single-flight) are testable
+// without a database; *storage.Queries satisfies it.
+type controlPlaneStore interface {
+	GetControlPlane(ctx context.Context) (storage.ControlPlane, error)
+	UpsertControlPlane(ctx context.Context, arg storage.UpsertControlPlaneParams) (storage.ControlPlane, error)
+}
+
 // Orchestrator runs the one-time provisioning against Auth and records the
 // result in the control_plane singleton row.
 type Orchestrator struct {
 	q   *storage.Queries
+	cp  controlPlaneStore
 	cfg Config
+
+	// Single-flight guard (see ErrSetupRunning).
+	mu      sync.Mutex
+	running bool
 }
 
 func NewOrchestrator(q *storage.Queries, cfg Config) *Orchestrator {
-	return &Orchestrator{q: q, cfg: cfg}
+	return &Orchestrator{q: q, cp: q, cfg: cfg}
+}
+
+// tryBegin claims the single-flight slot; callers that get true MUST call end.
+func (o *Orchestrator) tryBegin() bool {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if o.running {
+		return false
+	}
+	o.running = true
+	return true
+}
+
+func (o *Orchestrator) end() {
+	o.mu.Lock()
+	o.running = false
+	o.mu.Unlock()
 }
 
 // Enabled reports whether on-boot orchestration is turned on.
@@ -68,6 +108,10 @@ type Result struct {
 	JWKS                  json.RawMessage `json:"jwks,omitempty"`
 	CompletedAt           time.Time       `json:"completed_at"`
 	AlreadyComplete       bool            `json:"already_complete"`
+
+	// DeploymentMode mirrors the control_plane.deployment_mode column (the
+	// immutable substrate stamp); populated on load, not stored inside data.
+	DeploymentMode string `json:"deployment_mode,omitempty"`
 }
 
 func (o *Orchestrator) dial(ctx context.Context) (*grpc.ClientConn, error) {
@@ -132,8 +176,14 @@ func (o *Orchestrator) Run(ctx context.Context) (*Result, error) {
 
 // RunWith performs the full provisioning using the supplied tenant + admin
 // (the console wizard path), falling back to env defaults for any empty field.
-// It is safe to re-run once complete (short-circuits when Auth reports done).
+// It is safe to re-run once complete (short-circuits when Auth reports done)
+// and single-flight: a run started while another is in flight fails fast with
+// ErrSetupRunning instead of racing it (see the var doc for why that matters).
 func (o *Orchestrator) RunWith(ctx context.Context, in RunInput) (*Result, error) {
+	if !o.tryBegin() {
+		return nil, ErrSetupRunning
+	}
+	defer o.end()
 	if o.cfg.AuthAddr == "" {
 		return nil, fmt.Errorf("AUTH_SETUP_ADDR is not set")
 	}
@@ -213,7 +263,13 @@ func (o *Orchestrator) RunWith(ctx context.Context, in RunInput) (*Result, error
 	res.ControlPolicyName = rc.GetPolicyName()
 
 	// 3. Core's M2M control client (private_key_jwt — Core keeps the private key).
-	privPEM, jwks, err := generateControlKey()
+	// The keypair is minted ONCE per install: a previously persisted key is
+	// reused (its public JWKS re-derived) rather than regenerated. Minting a
+	// fresh key on every attempt would overwrite the stored PEM, so any retry
+	// after a partial failure would leave Auth holding a JWKS that no longer
+	// matches Core's stored private key — permanently breaking private_key_jwt —
+	// and would silently rotate a live credential as a side effect of a re-run.
+	privPEM, jwks, err := o.controlKey(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -318,6 +374,24 @@ func (o *Orchestrator) RunWith(ctx context.Context, in RunInput) (*Result, error
 	return res, nil
 }
 
+// controlKey returns Core's private_key_jwt signing key: the persisted one
+// when present (public JWKS re-derived from it), a freshly minted one only on
+// a truly first run. See the call site in RunWith for why reuse is mandatory.
+func (o *Orchestrator) controlKey(ctx context.Context) (privatePEM string, jwksJSON string, err error) {
+	if row, gerr := o.cp.GetControlPlane(ctx); gerr == nil && row.ControlPrivateKeyPem != "" {
+		jwks, derr := jwksFromPrivatePEM(row.ControlPrivateKeyPem)
+		if derr != nil {
+			// Fail closed: a stored-but-unparsable key means the install's
+			// credential state is corrupt. Generating a replacement here would
+			// hide the corruption AND desync Auth; surface it instead.
+			return "", "", fmt.Errorf("stored control key is unusable (refusing to overwrite it): %w", derr)
+		}
+		slog.Info("core setup: reusing persisted control key")
+		return row.ControlPrivateKeyPem, jwks, nil
+	}
+	return generateControlKey()
+}
+
 func (o *Orchestrator) persist(ctx context.Context, res *Result, privPEM string) error {
 	data, err := json.Marshal(res)
 	if err != nil {
@@ -327,10 +401,11 @@ func (o *Orchestrator) persist(ctx context.Context, res *Result, privPEM string)
 	if u, perr := uuid.Parse(res.AuthTenantID); perr == nil {
 		authUUID = pgtype.UUID{Bytes: u, Valid: true}
 	}
-	_, err = o.q.UpsertControlPlane(ctx, storage.UpsertControlPlaneParams{
+	_, err = o.cp.UpsertControlPlane(ctx, storage.UpsertControlPlaneParams{
 		AuthTenantUuid:       authUUID,
 		Data:                 data,
 		ControlPrivateKeyPem: privPEM,
+		DeploymentMode:       o.cfg.DeploymentMode,
 		SetupCompletedAt:     pgtype.Timestamptz{Time: res.CompletedAt, Valid: !res.CompletedAt.IsZero()},
 	})
 	return err
@@ -386,7 +461,7 @@ func (o *Orchestrator) mirror(ctx context.Context, res *Result, tenantName, tena
 
 // loadPersisted returns the stored control-plane result (empty if none yet).
 func (o *Orchestrator) loadPersisted(ctx context.Context) *Result {
-	row, err := o.q.GetControlPlane(ctx)
+	row, err := o.cp.GetControlPlane(ctx)
 	if err != nil {
 		return &Result{}
 	}
@@ -397,6 +472,7 @@ func (o *Orchestrator) loadPersisted(ctx context.Context) *Result {
 	if row.SetupCompletedAt.Valid {
 		res.CompletedAt = row.SetupCompletedAt.Time
 	}
+	res.DeploymentMode = row.DeploymentMode
 	return res
 }
 
@@ -414,6 +490,9 @@ func (o *Orchestrator) RunWithRetry(ctx context.Context) {
 	for {
 		if _, err := o.Run(ctx); err == nil {
 			return
+		} else if errors.Is(err, ErrSetupRunning) {
+			// The wizard beat us to it; poll again later rather than racing it.
+			slog.Info("core setup: another run is in flight — will re-check", "retry_in", backoff.String())
 		} else {
 			slog.Warn("core setup: attempt failed — will retry", "err", err, "retry_in", backoff.String())
 		}

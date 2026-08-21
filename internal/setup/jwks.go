@@ -25,7 +25,42 @@ func generateControlKey() (privatePEM string, jwksJSON string, err error) {
 	privDER := x509.MarshalPKCS1PrivateKey(key)
 	privPEM := pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: privDER})
 
-	pub := key.Public().(*rsa.PublicKey)
+	jwks, err := jwksFromPublicKey(key.Public().(*rsa.PublicKey))
+	if err != nil {
+		return "", "", err
+	}
+	return string(privPEM), jwks, nil
+}
+
+// jwksFromPrivatePEM re-derives the public JWK Set from a persisted private
+// key. This is what makes the control keypair mint-once: a setup re-run reuses
+// the stored PEM and reconstructs the exact JWKS (same modulus, same kid)
+// Auth already holds, instead of generating a fresh key that would desync the
+// registered JWKS from the stored private key.
+func jwksFromPrivatePEM(privatePEM string) (jwksJSON string, err error) {
+	block, _ := pem.Decode([]byte(privatePEM))
+	if block == nil {
+		return "", fmt.Errorf("control key PEM does not decode")
+	}
+	key, err := x509.ParsePKCS1PrivateKey(block.Bytes)
+	if err != nil {
+		// Tolerate PKCS8 too — the format is an encoding detail, not a contract.
+		k8, err8 := x509.ParsePKCS8PrivateKey(block.Bytes)
+		if err8 != nil {
+			return "", fmt.Errorf("parse control key: %w", err)
+		}
+		rsaKey, ok := k8.(*rsa.PrivateKey)
+		if !ok {
+			return "", fmt.Errorf("control key is not RSA")
+		}
+		key = rsaKey
+	}
+	return jwksFromPublicKey(key.Public().(*rsa.PublicKey))
+}
+
+// jwksFromPublicKey builds the single-key JWK Set for an RSA public key. The
+// kid is derived from the modulus, so the same key always yields the same kid.
+func jwksFromPublicKey(pub *rsa.PublicKey) (string, error) {
 	n := base64.RawURLEncoding.EncodeToString(pub.N.Bytes())
 	e := base64.RawURLEncoding.EncodeToString(big.NewInt(int64(pub.E)).Bytes())
 	sum := sha256.Sum256(pub.N.Bytes())
@@ -38,7 +73,7 @@ func generateControlKey() (privatePEM string, jwksJSON string, err error) {
 	}
 	b, err := json.Marshal(jwks)
 	if err != nil {
-		return "", "", fmt.Errorf("marshal jwks: %w", err)
+		return "", fmt.Errorf("marshal jwks: %w", err)
 	}
-	return string(privPEM), string(b), nil
+	return string(b), nil
 }

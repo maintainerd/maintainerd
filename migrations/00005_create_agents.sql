@@ -11,6 +11,13 @@ CREATE TABLE IF NOT EXISTS agents (
     endpoint     TEXT NOT NULL DEFAULT '',
     version      VARCHAR(50) NOT NULL DEFAULT '',
     capabilities JSONB NOT NULL DEFAULT '[]',
+    -- bound_subject is the verified token subject (the agent's auth client id /
+    -- service principal) captured on the agent's FIRST authenticated Register.
+    -- Every later gateway call must present the same subject: knowing an agent's
+    -- UUID (it appears in logs, APIs and configs) must never be enough to
+    -- impersonate the agent, pull its work or forge its status reports.
+    -- '' = not yet bound (first authenticated Register wins).
+    bound_subject VARCHAR(255) NOT NULL DEFAULT '',
     last_seen_at TIMESTAMPTZ,
     metadata     JSONB NOT NULL DEFAULT '{}',
     created_by   BIGINT,

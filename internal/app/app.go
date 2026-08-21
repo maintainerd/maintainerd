@@ -31,8 +31,11 @@ type App struct {
 }
 
 // New wires the domain layer over a pgx connection pool. The single
-// *storage.Queries satisfies every domain's Repository interface.
-func New(pool *pgxpool.Pool) *App {
+// *storage.Queries satisfies every domain's Repository interface. setupGate is
+// the setup surface's self-guard (CORE_SETUP_TOKEN + optional admin-token
+// verify) — resolved by the bootstrap because it depends on APP_ENV and the
+// verifier the bootstrap builds.
+func New(pool *pgxpool.Pool, setupGate setup.Gate) *App {
 	q := storage.New(pool)
 
 	agentSvc := agent.NewService(q)
@@ -46,7 +49,7 @@ func New(pool *pgxpool.Pool) *App {
 		Provider: provider.NewHandler(provider.NewService(q)),
 		Agent:    agent.NewHandler(agentSvc),
 		Resource: resource.NewHandler(resourceSvc),
-		Setup:    setup.NewHandler(setupOrch),
+		Setup:    setup.NewHandler(setupOrch, setupGate),
 
 		AgentSvc:    agentSvc,
 		ResourceSvc: resourceSvc,

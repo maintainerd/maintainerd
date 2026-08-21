@@ -51,6 +51,38 @@ var (
 	// abandoned provision fail closed on its own; re-provisioning is a restart.
 	SetupWindowTTL time.Duration
 
+	// Caller authentication (the sdk verifier guarding the HTTP API and the
+	// AgentGateway). All three are required for the guards to enforce; outside
+	// development a missing value fails closed (HTTP 503 / gRPC health-only)
+	// rather than serving the control plane open. See cmd/server resolve*Guard.
+	AuthJWKSURL  string // AUTH_JWKS_URL  — Auth's public JWKS endpoint
+	AuthIssuer   string // AUTH_ISSUER    — expected token issuer
+	AuthAudience string // AUTH_AUDIENCE  — expected token audience (Core's API identifier)
+
+	// CoreSetupToken (CORE_SETUP_TOKEN) gates POST /api/v1/setup and the full
+	// GET /setup/status payload — the surfaces that provision (and describe)
+	// the control plane before Auth-minted tokens exist. Compared in constant
+	// time; empty outside development DISABLES the setup trigger entirely.
+	// Loaded via the secret provider. Never log this value.
+	CoreSetupToken string
+
+	// DeploymentMode (DEPLOYMENT_MODE: docker|kubernetes, default docker) is
+	// the substrate this install reconciles workloads onto. It is stamped into
+	// control_plane at setup and immutable afterwards: every reconciled
+	// resource was materialized on that substrate, so changing it later would
+	// orphan every running workload. Boot refuses to start when this env value
+	// disagrees with the stamp (see cmd/server).
+	DeploymentMode string
+
+	// GatewayLeaseTTL (LEASE_TTL, default 60s) is how long a PullWork dispatch
+	// keeps a work item out of the feed before it may be re-dispatched.
+	GatewayLeaseTTL time.Duration
+
+	// GatewayAttemptBudget (ATTEMPT_BUDGET, default 10) is how many failed
+	// convergence attempts a resource gets before parking as state 'failed'
+	// until its spec changes.
+	GatewayAttemptBudget int
+
 	// Application Encryption Key (AES-256)
 	AppEncryptionKey []byte
 
@@ -208,6 +240,34 @@ func Init() error {
 	// provider.
 	if SetupBootstrapToken, err = LoadSecretStringOptional("SETUP_BOOTSTRAP_TOKEN"); err != nil {
 		return fmt.Errorf("failed to load setup bootstrap token: %w", err)
+	}
+	if CoreSetupToken, err = LoadSecretStringOptional("CORE_SETUP_TOKEN"); err != nil {
+		return fmt.Errorf("failed to load core setup token: %w", err)
+	}
+
+	// Caller-authentication config (see the var block for semantics). Optional
+	// here — the fail-closed decision for missing values is made where the
+	// listeners are built (cmd/server), because it depends on AppEnv.
+	AuthJWKSURL = GetEnvOrDefault("AUTH_JWKS_URL", "")
+	AuthIssuer = GetEnvOrDefault("AUTH_ISSUER", "")
+	AuthAudience = GetEnvOrDefault("AUTH_AUDIENCE", "")
+
+	DeploymentMode = strings.ToLower(strings.TrimSpace(GetEnvOrDefault("DEPLOYMENT_MODE", "docker")))
+	if DeploymentMode != "docker" && DeploymentMode != "kubernetes" {
+		// Validated, not defaulted-on-typo: a misspelled mode silently treated
+		// as docker would stamp the wrong substrate into an immutable record.
+		return fmt.Errorf("DEPLOYMENT_MODE must be \"docker\" or \"kubernetes\" (got %q)", DeploymentMode)
+	}
+
+	if GatewayLeaseTTL, err = time.ParseDuration(GetEnvOrDefault("LEASE_TTL", "60s")); err != nil {
+		return fmt.Errorf("LEASE_TTL is not a valid duration: %w", err)
+	}
+	if GatewayLeaseTTL <= 0 {
+		return fmt.Errorf("LEASE_TTL must be positive (got %s)", GatewayLeaseTTL)
+	}
+	GatewayAttemptBudget = parseIntDefault(GetEnvOrDefault("ATTEMPT_BUDGET", "10"), 10)
+	if GatewayAttemptBudget < 1 {
+		return fmt.Errorf("ATTEMPT_BUDGET must be at least 1 (got %d)", GatewayAttemptBudget)
 	}
 
 	// Frontend Config (optional — auth-era; unused by the core control plane).

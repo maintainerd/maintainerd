@@ -20,6 +20,7 @@ type Agent struct {
 	Endpoint     string             `json:"endpoint"`
 	Version      string             `json:"version"`
 	Capabilities []byte             `json:"capabilities"`
+	BoundSubject string             `json:"bound_subject"`
 	LastSeenAt   pgtype.Timestamptz `json:"last_seen_at"`
 	Metadata     []byte             `json:"metadata"`
 	CreatedBy    pgtype.Int8        `json:"created_by"`
@@ -34,6 +35,7 @@ type ControlPlane struct {
 	AuthTenantUuid       pgtype.UUID        `json:"auth_tenant_uuid"`
 	Data                 []byte             `json:"data"`
 	ControlPrivateKeyPem string             `json:"control_private_key_pem"`
+	DeploymentMode       string             `json:"deployment_mode"`
 	SetupCompletedAt     pgtype.Timestamptz `json:"setup_completed_at"`
 	CreatedAt            time.Time          `json:"created_at"`
 	UpdatedAt            time.Time          `json:"updated_at"`
@@ -87,6 +89,9 @@ type Resource struct {
 	Status             []byte             `json:"status"`
 	Generation         int64              `json:"generation"`
 	ObservedGeneration int64              `json:"observed_generation"`
+	LeasedUntil        pgtype.Timestamptz `json:"leased_until"`
+	Attempts           int32              `json:"attempts"`
+	NextAttemptAt      pgtype.Timestamptz `json:"next_attempt_at"`
 	Metadata           []byte             `json:"metadata"`
 	CreatedBy          pgtype.Int8        `json:"created_by"`
 	UpdatedBy          pgtype.Int8        `json:"updated_by"`

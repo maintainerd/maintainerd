@@ -15,7 +15,7 @@ const agentHeartbeat = `-- name: AgentHeartbeat :one
 UPDATE agents
 SET last_seen_at = now(), status = 'online', updated_at = now()
 WHERE agent_uuid = $1 AND deleted_at IS NULL
-RETURNING agent_id, agent_uuid, tenant_id, name, status, endpoint, version, capabilities, last_seen_at, metadata, created_by, updated_by, created_at, updated_at, deleted_at
+RETURNING agent_id, agent_uuid, tenant_id, name, status, endpoint, version, capabilities, bound_subject, last_seen_at, metadata, created_by, updated_by, created_at, updated_at, deleted_at
 `
 
 func (q *Queries) AgentHeartbeat(ctx context.Context, agentUuid uuid.UUID) (Agent, error) {
@@ -30,6 +30,49 @@ func (q *Queries) AgentHeartbeat(ctx context.Context, agentUuid uuid.UUID) (Agen
 		&i.Endpoint,
 		&i.Version,
 		&i.Capabilities,
+		&i.BoundSubject,
+		&i.LastSeenAt,
+		&i.Metadata,
+		&i.CreatedBy,
+		&i.UpdatedBy,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.DeletedAt,
+	)
+	return i, err
+}
+
+const bindAgentSubject = `-- name: BindAgentSubject :one
+UPDATE agents
+SET bound_subject = $2, updated_at = now()
+WHERE agent_uuid = $1 AND deleted_at IS NULL
+  AND (bound_subject = '' OR bound_subject = $2)
+RETURNING agent_id, agent_uuid, tenant_id, name, status, endpoint, version, capabilities, bound_subject, last_seen_at, metadata, created_by, updated_by, created_at, updated_at, deleted_at
+`
+
+type BindAgentSubjectParams struct {
+	AgentUuid    uuid.UUID `json:"agent_uuid"`
+	BoundSubject string    `json:"bound_subject"`
+}
+
+// First authenticated Register wins: binds the verified token subject to the
+// agent row. A Register presenting a DIFFERENT subject for an already-bound
+// agent matches no rows, which the service surfaces as PermissionDenied — an
+// enrolled agent identity can never be silently taken over by another
+// principal that merely learned the agent's UUID.
+func (q *Queries) BindAgentSubject(ctx context.Context, arg BindAgentSubjectParams) (Agent, error) {
+	row := q.db.QueryRow(ctx, bindAgentSubject, arg.AgentUuid, arg.BoundSubject)
+	var i Agent
+	err := row.Scan(
+		&i.AgentID,
+		&i.AgentUuid,
+		&i.TenantID,
+		&i.Name,
+		&i.Status,
+		&i.Endpoint,
+		&i.Version,
+		&i.Capabilities,
+		&i.BoundSubject,
 		&i.LastSeenAt,
 		&i.Metadata,
 		&i.CreatedBy,
@@ -55,7 +98,7 @@ func (q *Queries) CountAgentsByTenant(ctx context.Context, tenantID int64) (int6
 const createAgent = `-- name: CreateAgent :one
 INSERT INTO agents (tenant_id, name, status, endpoint, version, capabilities, metadata)
 VALUES ($1, $2, $3, $4, $5, $6, $7)
-RETURNING agent_id, agent_uuid, tenant_id, name, status, endpoint, version, capabilities, last_seen_at, metadata, created_by, updated_by, created_at, updated_at, deleted_at
+RETURNING agent_id, agent_uuid, tenant_id, name, status, endpoint, version, capabilities, bound_subject, last_seen_at, metadata, created_by, updated_by, created_at, updated_at, deleted_at
 `
 
 type CreateAgentParams struct {
@@ -88,6 +131,7 @@ func (q *Queries) CreateAgent(ctx context.Context, arg CreateAgentParams) (Agent
 		&i.Endpoint,
 		&i.Version,
 		&i.Capabilities,
+		&i.BoundSubject,
 		&i.LastSeenAt,
 		&i.Metadata,
 		&i.CreatedBy,
@@ -100,7 +144,7 @@ func (q *Queries) CreateAgent(ctx context.Context, arg CreateAgentParams) (Agent
 }
 
 const getAgentByID = `-- name: GetAgentByID :one
-SELECT agent_id, agent_uuid, tenant_id, name, status, endpoint, version, capabilities, last_seen_at, metadata, created_by, updated_by, created_at, updated_at, deleted_at FROM agents WHERE agent_id = $1 AND deleted_at IS NULL
+SELECT agent_id, agent_uuid, tenant_id, name, status, endpoint, version, capabilities, bound_subject, last_seen_at, metadata, created_by, updated_by, created_at, updated_at, deleted_at FROM agents WHERE agent_id = $1 AND deleted_at IS NULL
 `
 
 func (q *Queries) GetAgentByID(ctx context.Context, agentID int64) (Agent, error) {
@@ -115,6 +159,7 @@ func (q *Queries) GetAgentByID(ctx context.Context, agentID int64) (Agent, error
 		&i.Endpoint,
 		&i.Version,
 		&i.Capabilities,
+		&i.BoundSubject,
 		&i.LastSeenAt,
 		&i.Metadata,
 		&i.CreatedBy,
@@ -127,7 +172,7 @@ func (q *Queries) GetAgentByID(ctx context.Context, agentID int64) (Agent, error
 }
 
 const getAgentByUUID = `-- name: GetAgentByUUID :one
-SELECT agent_id, agent_uuid, tenant_id, name, status, endpoint, version, capabilities, last_seen_at, metadata, created_by, updated_by, created_at, updated_at, deleted_at FROM agents WHERE agent_uuid = $1 AND deleted_at IS NULL
+SELECT agent_id, agent_uuid, tenant_id, name, status, endpoint, version, capabilities, bound_subject, last_seen_at, metadata, created_by, updated_by, created_at, updated_at, deleted_at FROM agents WHERE agent_uuid = $1 AND deleted_at IS NULL
 `
 
 func (q *Queries) GetAgentByUUID(ctx context.Context, agentUuid uuid.UUID) (Agent, error) {
@@ -142,6 +187,7 @@ func (q *Queries) GetAgentByUUID(ctx context.Context, agentUuid uuid.UUID) (Agen
 		&i.Endpoint,
 		&i.Version,
 		&i.Capabilities,
+		&i.BoundSubject,
 		&i.LastSeenAt,
 		&i.Metadata,
 		&i.CreatedBy,
@@ -154,7 +200,7 @@ func (q *Queries) GetAgentByUUID(ctx context.Context, agentUuid uuid.UUID) (Agen
 }
 
 const listAgentsByTenant = `-- name: ListAgentsByTenant :many
-SELECT agent_id, agent_uuid, tenant_id, name, status, endpoint, version, capabilities, last_seen_at, metadata, created_by, updated_by, created_at, updated_at, deleted_at FROM agents
+SELECT agent_id, agent_uuid, tenant_id, name, status, endpoint, version, capabilities, bound_subject, last_seen_at, metadata, created_by, updated_by, created_at, updated_at, deleted_at FROM agents
 WHERE tenant_id = $1 AND deleted_at IS NULL
 ORDER BY created_at DESC
 LIMIT $2 OFFSET $3
@@ -184,6 +230,7 @@ func (q *Queries) ListAgentsByTenant(ctx context.Context, arg ListAgentsByTenant
 			&i.Endpoint,
 			&i.Version,
 			&i.Capabilities,
+			&i.BoundSubject,
 			&i.LastSeenAt,
 			&i.Metadata,
 			&i.CreatedBy,
@@ -216,7 +263,7 @@ const updateAgentStatus = `-- name: UpdateAgentStatus :one
 UPDATE agents
 SET status = $2, endpoint = $3, version = $4, capabilities = $5, updated_at = now()
 WHERE agent_uuid = $1 AND deleted_at IS NULL
-RETURNING agent_id, agent_uuid, tenant_id, name, status, endpoint, version, capabilities, last_seen_at, metadata, created_by, updated_by, created_at, updated_at, deleted_at
+RETURNING agent_id, agent_uuid, tenant_id, name, status, endpoint, version, capabilities, bound_subject, last_seen_at, metadata, created_by, updated_by, created_at, updated_at, deleted_at
 `
 
 type UpdateAgentStatusParams struct {
@@ -245,6 +292,7 @@ func (q *Queries) UpdateAgentStatus(ctx context.Context, arg UpdateAgentStatusPa
 		&i.Endpoint,
 		&i.Version,
 		&i.Capabilities,
+		&i.BoundSubject,
 		&i.LastSeenAt,
 		&i.Metadata,
 		&i.CreatedBy,

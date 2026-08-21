@@ -33,3 +33,15 @@ RETURNING *;
 -- name: SoftDeleteAgent :exec
 UPDATE agents SET deleted_at = now(), updated_at = now()
 WHERE agent_uuid = $1 AND deleted_at IS NULL;
+
+-- name: BindAgentSubject :one
+-- First authenticated Register wins: binds the verified token subject to the
+-- agent row. A Register presenting a DIFFERENT subject for an already-bound
+-- agent matches no rows, which the service surfaces as PermissionDenied — an
+-- enrolled agent identity can never be silently taken over by another
+-- principal that merely learned the agent's UUID.
+UPDATE agents
+SET bound_subject = $2, updated_at = now()
+WHERE agent_uuid = $1 AND deleted_at IS NULL
+  AND (bound_subject = '' OR bound_subject = $2)
+RETURNING *;

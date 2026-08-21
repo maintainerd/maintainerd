@@ -13,10 +13,14 @@ import (
 	"github.com/go-chi/chi/v5/middleware"
 
 	"github.com/maintainerd/core/internal/app"
+	"github.com/maintainerd/core/internal/platform/authz"
 )
 
-// Router builds the core HTTP API.
-func Router(a *app.App) http.Handler {
+// Router builds the core HTTP API. Every route under /api/v1 is behind the
+// authz guard (bearer token + route→permission map, fail-closed); /healthz
+// sits outside the group so liveness probes need no credentials, and the
+// setup surface carries its own CORE_SETUP_TOKEN gate (see internal/setup).
+func Router(a *app.App, guard authz.Guard) http.Handler {
 	r := chi.NewRouter()
 	r.Use(middleware.RequestID)
 	r.Use(middleware.Recoverer)
@@ -28,6 +32,7 @@ func Router(a *app.App) http.Handler {
 	})
 
 	r.Route("/api/v1", func(r chi.Router) {
+		r.Use(guard.Middleware)
 		r.Mount("/tenants", a.Tenant.Routes())
 		r.Mount("/projects", a.Project.Routes())
 		r.Mount("/services", a.Service.Routes())

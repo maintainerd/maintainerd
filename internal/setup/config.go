@@ -29,15 +29,22 @@ type Config struct {
 	AdminPassword     string // SETUP_ADMIN_PASSWORD
 
 	// Core's own control-plane identity registered in Auth.
-	CoreServiceName    string   // fixed: maintainerd-core
-	CoreAudience       string   // CORE_API_AUDIENCE (the API identifier tokens are minted for)
-	ConsoleDomain      string   // CORE_CONSOLE_DOMAIN
+	CoreServiceName     string   // fixed: maintainerd-core
+	CoreAudience        string   // CORE_API_AUDIENCE (the API identifier tokens are minted for)
+	ConsoleDomain       string   // CORE_CONSOLE_DOMAIN
 	ConsoleRedirectURIs []string // CORE_CONSOLE_REDIRECT_URIS (comma-separated)
 
 	// Endpoints recorded in Core's service registry for the system services.
 	AuthEndpoint   string // = AuthAddr
 	SecretEndpoint string // SECRET_ENDPOINT
 	DockerEndpoint string // DOCKER_ENDPOINT
+
+	// DeploymentMode (DEPLOYMENT_MODE: docker|kubernetes, default docker) is the
+	// substrate this install reconciles onto. It is stamped into control_plane at
+	// setup and is immutable afterwards — boot refuses to start when the env
+	// disagrees with the stamp (see cmd/server). Validation happens in
+	// internal/platform/config.Init; by the time this loads it is trustworthy.
+	DeploymentMode string
 }
 
 func env(key, def string) string {
@@ -71,7 +78,7 @@ func LoadConfig() Config {
 	authAddr := env("AUTH_SETUP_ADDR", "")
 	consoleDomain := env("CORE_CONSOLE_DOMAIN", "console.maintainerd.local")
 	return Config{
-		Enabled:        envBool("SETUP_ENABLED"),
+		Enabled:            envBool("SETUP_ENABLED"),
 		AuthAddr:           authAddr,
 		AuthToken:          env("AUTH_SETUP_BOOTSTRAP_TOKEN", ""),
 		AuthCAFile:         env("AUTH_SETUP_CA_FILE", ""),
@@ -86,15 +93,17 @@ func LoadConfig() Config {
 		AdminEmail:        env("SETUP_ADMIN_EMAIL", "admin@maintainerd.local"),
 		AdminPassword:     env("SETUP_ADMIN_PASSWORD", ""),
 
-		CoreServiceName:     "maintainerd-core",
+		CoreServiceName: "maintainerd-core",
 		// The API identifier (aud) tokens for Core are minted for — distinct from
 		// the console origin.
-		CoreAudience: env("CORE_API_AUDIENCE", "https://core.maintainerd.local"),
+		CoreAudience:        env("CORE_API_AUDIENCE", "https://core.maintainerd.local"),
 		ConsoleDomain:       consoleDomain,
 		ConsoleRedirectURIs: envList("CORE_CONSOLE_REDIRECT_URIS", "https://"+consoleDomain+"/auth/callback"),
 
 		AuthEndpoint:   authAddr,
 		SecretEndpoint: env("SECRET_ENDPOINT", ""),
 		DockerEndpoint: env("DOCKER_ENDPOINT", ""),
+
+		DeploymentMode: env("DEPLOYMENT_MODE", "docker"),
 	}
 }

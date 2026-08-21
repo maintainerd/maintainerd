@@ -12,11 +12,82 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const applyAgentReport = `-- name: ApplyAgentReport :one
+UPDATE resources
+SET status = $2,
+    state = $3,
+    observed_generation = GREATEST(observed_generation, $4),
+    attempts = $5,
+    next_attempt_at = $6,
+    leased_until = NULL,
+    deleted_at = CASE WHEN $7::bool THEN now() ELSE deleted_at END,
+    updated_at = now()
+WHERE resource_uuid = $1 AND deleted_at IS NULL
+RETURNING resource_id, resource_uuid, tenant_id, project_id, provider_id, agent_id, owner_resource_id, kind, name, state, spec, status, generation, observed_generation, leased_until, attempts, next_attempt_at, metadata, created_by, updated_by, created_at, updated_at, deleted_at
+`
+
+type ApplyAgentReportParams struct {
+	ResourceUuid       uuid.UUID          `json:"resource_uuid"`
+	Status             []byte             `json:"status"`
+	State              string             `json:"state"`
+	ObservedGeneration int64              `json:"observed_generation"`
+	Attempts           int32              `json:"attempts"`
+	NextAttemptAt      pgtype.Timestamptz `json:"next_attempt_at"`
+	Finalize           bool               `json:"finalize"`
+}
+
+// The gateway's single write path for agent status reports. The service layer
+// computes the resulting state / attempts / backoff in Go; this statement
+// applies them atomically and ALWAYS releases the dispatch lease (a report is
+// the agent's answer for the leased item). observed_generation only moves
+// forward (GREATEST) so a stale drift report can never rewind convergence
+// progress; failure paths pass 0 to leave it untouched. `finalize` stamps
+// deleted_at — the terminal step of the teardown protocol after an agent
+// reports the workload removed.
+func (q *Queries) ApplyAgentReport(ctx context.Context, arg ApplyAgentReportParams) (Resource, error) {
+	row := q.db.QueryRow(ctx, applyAgentReport,
+		arg.ResourceUuid,
+		arg.Status,
+		arg.State,
+		arg.ObservedGeneration,
+		arg.Attempts,
+		arg.NextAttemptAt,
+		arg.Finalize,
+	)
+	var i Resource
+	err := row.Scan(
+		&i.ResourceID,
+		&i.ResourceUuid,
+		&i.TenantID,
+		&i.ProjectID,
+		&i.ProviderID,
+		&i.AgentID,
+		&i.OwnerResourceID,
+		&i.Kind,
+		&i.Name,
+		&i.State,
+		&i.Spec,
+		&i.Status,
+		&i.Generation,
+		&i.ObservedGeneration,
+		&i.LeasedUntil,
+		&i.Attempts,
+		&i.NextAttemptAt,
+		&i.Metadata,
+		&i.CreatedBy,
+		&i.UpdatedBy,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.DeletedAt,
+	)
+	return i, err
+}
+
 const assignResourceAgent = `-- name: AssignResourceAgent :one
 UPDATE resources
 SET agent_id = $2, updated_at = now()
 WHERE resource_uuid = $1 AND deleted_at IS NULL
-RETURNING resource_id, resource_uuid, tenant_id, project_id, provider_id, agent_id, owner_resource_id, kind, name, state, spec, status, generation, observed_generation, metadata, created_by, updated_by, created_at, updated_at, deleted_at
+RETURNING resource_id, resource_uuid, tenant_id, project_id, provider_id, agent_id, owner_resource_id, kind, name, state, spec, status, generation, observed_generation, leased_until, attempts, next_attempt_at, metadata, created_by, updated_by, created_at, updated_at, deleted_at
 `
 
 type AssignResourceAgentParams struct {
@@ -42,6 +113,9 @@ func (q *Queries) AssignResourceAgent(ctx context.Context, arg AssignResourceAge
 		&i.Status,
 		&i.Generation,
 		&i.ObservedGeneration,
+		&i.LeasedUntil,
+		&i.Attempts,
+		&i.NextAttemptAt,
 		&i.Metadata,
 		&i.CreatedBy,
 		&i.UpdatedBy,
@@ -50,6 +124,82 @@ func (q *Queries) AssignResourceAgent(ctx context.Context, arg AssignResourceAge
 		&i.DeletedAt,
 	)
 	return i, err
+}
+
+const claimAgentWork = `-- name: ClaimAgentWork :many
+UPDATE resources
+SET agent_id = $1,
+    leased_until = now() + make_interval(secs => $2::float8),
+    updated_at = now()
+WHERE resource_id IN (
+    SELECT r.resource_id FROM resources r
+    WHERE (r.observed_generation < r.generation OR r.state IN ('deleting', 'error'))
+      AND r.state <> 'failed'
+      AND r.deleted_at IS NULL
+      AND (r.agent_id = $1 OR r.agent_id IS NULL)
+      AND (r.leased_until IS NULL OR r.leased_until < now())
+      AND (r.next_attempt_at IS NULL OR r.next_attempt_at <= now())
+    ORDER BY r.updated_at ASC
+    LIMIT $3
+    FOR UPDATE SKIP LOCKED
+)
+RETURNING resource_id, resource_uuid, tenant_id, project_id, provider_id, agent_id, owner_resource_id, kind, name, state, spec, status, generation, observed_generation, leased_until, attempts, next_attempt_at, metadata, created_by, updated_by, created_at, updated_at, deleted_at
+`
+
+type ClaimAgentWorkParams struct {
+	AgentID      pgtype.Int8 `json:"agent_id"`
+	LeaseSeconds float64     `json:"lease_seconds"`
+	MaxItems     int32       `json:"max_items"`
+}
+
+// PullWork's atomic claim. Feed rules match ListOutOfSyncResources, scoped to
+// items already assigned to the calling agent OR unassigned (first claim is
+// sticky: agent_id is stamped and later pulls by other agents skip the row).
+// The FOR UPDATE SKIP LOCKED subselect + single UPDATE make it impossible for
+// two concurrent agents to claim the same item; the lease keeps the item out
+// of the feed until it expires or a status report releases it.
+func (q *Queries) ClaimAgentWork(ctx context.Context, arg ClaimAgentWorkParams) ([]Resource, error) {
+	rows, err := q.db.Query(ctx, claimAgentWork, arg.AgentID, arg.LeaseSeconds, arg.MaxItems)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []Resource{}
+	for rows.Next() {
+		var i Resource
+		if err := rows.Scan(
+			&i.ResourceID,
+			&i.ResourceUuid,
+			&i.TenantID,
+			&i.ProjectID,
+			&i.ProviderID,
+			&i.AgentID,
+			&i.OwnerResourceID,
+			&i.Kind,
+			&i.Name,
+			&i.State,
+			&i.Spec,
+			&i.Status,
+			&i.Generation,
+			&i.ObservedGeneration,
+			&i.LeasedUntil,
+			&i.Attempts,
+			&i.NextAttemptAt,
+			&i.Metadata,
+			&i.CreatedBy,
+			&i.UpdatedBy,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.DeletedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const countResourcesByProject = `-- name: CountResourcesByProject :one
@@ -66,7 +216,7 @@ func (q *Queries) CountResourcesByProject(ctx context.Context, projectID int64) 
 const createResource = `-- name: CreateResource :one
 INSERT INTO resources (tenant_id, project_id, provider_id, agent_id, owner_resource_id, kind, name, spec, metadata)
 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-RETURNING resource_id, resource_uuid, tenant_id, project_id, provider_id, agent_id, owner_resource_id, kind, name, state, spec, status, generation, observed_generation, metadata, created_by, updated_by, created_at, updated_at, deleted_at
+RETURNING resource_id, resource_uuid, tenant_id, project_id, provider_id, agent_id, owner_resource_id, kind, name, state, spec, status, generation, observed_generation, leased_until, attempts, next_attempt_at, metadata, created_by, updated_by, created_at, updated_at, deleted_at
 `
 
 type CreateResourceParams struct {
@@ -109,6 +259,9 @@ func (q *Queries) CreateResource(ctx context.Context, arg CreateResourceParams) 
 		&i.Status,
 		&i.Generation,
 		&i.ObservedGeneration,
+		&i.LeasedUntil,
+		&i.Attempts,
+		&i.NextAttemptAt,
 		&i.Metadata,
 		&i.CreatedBy,
 		&i.UpdatedBy,
@@ -120,7 +273,7 @@ func (q *Queries) CreateResource(ctx context.Context, arg CreateResourceParams) 
 }
 
 const getResourceByID = `-- name: GetResourceByID :one
-SELECT resource_id, resource_uuid, tenant_id, project_id, provider_id, agent_id, owner_resource_id, kind, name, state, spec, status, generation, observed_generation, metadata, created_by, updated_by, created_at, updated_at, deleted_at FROM resources WHERE resource_id = $1 AND deleted_at IS NULL
+SELECT resource_id, resource_uuid, tenant_id, project_id, provider_id, agent_id, owner_resource_id, kind, name, state, spec, status, generation, observed_generation, leased_until, attempts, next_attempt_at, metadata, created_by, updated_by, created_at, updated_at, deleted_at FROM resources WHERE resource_id = $1 AND deleted_at IS NULL
 `
 
 func (q *Queries) GetResourceByID(ctx context.Context, resourceID int64) (Resource, error) {
@@ -141,6 +294,9 @@ func (q *Queries) GetResourceByID(ctx context.Context, resourceID int64) (Resour
 		&i.Status,
 		&i.Generation,
 		&i.ObservedGeneration,
+		&i.LeasedUntil,
+		&i.Attempts,
+		&i.NextAttemptAt,
 		&i.Metadata,
 		&i.CreatedBy,
 		&i.UpdatedBy,
@@ -152,7 +308,7 @@ func (q *Queries) GetResourceByID(ctx context.Context, resourceID int64) (Resour
 }
 
 const getResourceByUUID = `-- name: GetResourceByUUID :one
-SELECT resource_id, resource_uuid, tenant_id, project_id, provider_id, agent_id, owner_resource_id, kind, name, state, spec, status, generation, observed_generation, metadata, created_by, updated_by, created_at, updated_at, deleted_at FROM resources WHERE resource_uuid = $1 AND deleted_at IS NULL
+SELECT resource_id, resource_uuid, tenant_id, project_id, provider_id, agent_id, owner_resource_id, kind, name, state, spec, status, generation, observed_generation, leased_until, attempts, next_attempt_at, metadata, created_by, updated_by, created_at, updated_at, deleted_at FROM resources WHERE resource_uuid = $1 AND deleted_at IS NULL
 `
 
 func (q *Queries) GetResourceByUUID(ctx context.Context, resourceUuid uuid.UUID) (Resource, error) {
@@ -173,6 +329,9 @@ func (q *Queries) GetResourceByUUID(ctx context.Context, resourceUuid uuid.UUID)
 		&i.Status,
 		&i.Generation,
 		&i.ObservedGeneration,
+		&i.LeasedUntil,
+		&i.Attempts,
+		&i.NextAttemptAt,
 		&i.Metadata,
 		&i.CreatedBy,
 		&i.UpdatedBy,
@@ -184,13 +343,23 @@ func (q *Queries) GetResourceByUUID(ctx context.Context, resourceUuid uuid.UUID)
 }
 
 const listOutOfSyncResources = `-- name: ListOutOfSyncResources :many
-SELECT resource_id, resource_uuid, tenant_id, project_id, provider_id, agent_id, owner_resource_id, kind, name, state, spec, status, generation, observed_generation, metadata, created_by, updated_by, created_at, updated_at, deleted_at FROM resources
-WHERE observed_generation < generation AND state <> 'failed' AND deleted_at IS NULL
+SELECT resource_id, resource_uuid, tenant_id, project_id, provider_id, agent_id, owner_resource_id, kind, name, state, spec, status, generation, observed_generation, leased_until, attempts, next_attempt_at, metadata, created_by, updated_by, created_at, updated_at, deleted_at FROM resources
+WHERE (observed_generation < generation OR state IN ('deleting', 'error'))
+  AND state <> 'failed'
+  AND deleted_at IS NULL
+  AND (leased_until IS NULL OR leased_until < now())
+  AND (next_attempt_at IS NULL OR next_attempt_at <= now())
 ORDER BY updated_at ASC
 LIMIT $1
 `
 
-// The reconciler's work feed: resources whose observed state lags their spec.
+// The reconciler's work feed (read-only variant; the gateway uses ClaimAgentWork
+// which additionally stamps the lease + agent assignment). A row is fed when:
+//   - its observed state lags its spec, OR it is being torn down ('deleting'),
+//     OR a prior attempt failed retryably ('error');
+//   - it is not parked as 'failed' (budget exhausted — only a spec change
+//     re-arms it);
+//   - no dispatch lease is active and any retry backoff has elapsed.
 func (q *Queries) ListOutOfSyncResources(ctx context.Context, limit int32) ([]Resource, error) {
 	rows, err := q.db.Query(ctx, listOutOfSyncResources, limit)
 	if err != nil {
@@ -215,6 +384,9 @@ func (q *Queries) ListOutOfSyncResources(ctx context.Context, limit int32) ([]Re
 			&i.Status,
 			&i.Generation,
 			&i.ObservedGeneration,
+			&i.LeasedUntil,
+			&i.Attempts,
+			&i.NextAttemptAt,
 			&i.Metadata,
 			&i.CreatedBy,
 			&i.UpdatedBy,
@@ -233,7 +405,7 @@ func (q *Queries) ListOutOfSyncResources(ctx context.Context, limit int32) ([]Re
 }
 
 const listResourcesByProject = `-- name: ListResourcesByProject :many
-SELECT resource_id, resource_uuid, tenant_id, project_id, provider_id, agent_id, owner_resource_id, kind, name, state, spec, status, generation, observed_generation, metadata, created_by, updated_by, created_at, updated_at, deleted_at FROM resources
+SELECT resource_id, resource_uuid, tenant_id, project_id, provider_id, agent_id, owner_resource_id, kind, name, state, spec, status, generation, observed_generation, leased_until, attempts, next_attempt_at, metadata, created_by, updated_by, created_at, updated_at, deleted_at FROM resources
 WHERE project_id = $1 AND deleted_at IS NULL
 ORDER BY created_at DESC
 LIMIT $2 OFFSET $3
@@ -269,6 +441,9 @@ func (q *Queries) ListResourcesByProject(ctx context.Context, arg ListResourcesB
 			&i.Status,
 			&i.Generation,
 			&i.ObservedGeneration,
+			&i.LeasedUntil,
+			&i.Attempts,
+			&i.NextAttemptAt,
 			&i.Metadata,
 			&i.CreatedBy,
 			&i.UpdatedBy,
@@ -287,7 +462,7 @@ func (q *Queries) ListResourcesByProject(ctx context.Context, arg ListResourcesB
 }
 
 const listResourcesByTenant = `-- name: ListResourcesByTenant :many
-SELECT resource_id, resource_uuid, tenant_id, project_id, provider_id, agent_id, owner_resource_id, kind, name, state, spec, status, generation, observed_generation, metadata, created_by, updated_by, created_at, updated_at, deleted_at FROM resources
+SELECT resource_id, resource_uuid, tenant_id, project_id, provider_id, agent_id, owner_resource_id, kind, name, state, spec, status, generation, observed_generation, leased_until, attempts, next_attempt_at, metadata, created_by, updated_by, created_at, updated_at, deleted_at FROM resources
 WHERE tenant_id = $1 AND deleted_at IS NULL
 ORDER BY created_at DESC
 LIMIT $2 OFFSET $3
@@ -323,6 +498,9 @@ func (q *Queries) ListResourcesByTenant(ctx context.Context, arg ListResourcesBy
 			&i.Status,
 			&i.Generation,
 			&i.ObservedGeneration,
+			&i.LeasedUntil,
+			&i.Attempts,
+			&i.NextAttemptAt,
 			&i.Metadata,
 			&i.CreatedBy,
 			&i.UpdatedBy,
@@ -340,22 +518,27 @@ func (q *Queries) ListResourcesByTenant(ctx context.Context, arg ListResourcesBy
 	return items, nil
 }
 
-const softDeleteResource = `-- name: SoftDeleteResource :exec
-UPDATE resources SET state = 'deleting', deleted_at = now(), updated_at = now()
+const markResourceDeleting = `-- name: MarkResourceDeleting :exec
+UPDATE resources SET state = 'deleting', updated_at = now()
 WHERE resource_uuid = $1 AND deleted_at IS NULL
 `
 
-// Deletion is a desired-state change too: mark deleting so the reconciler can tear down.
-func (q *Queries) SoftDeleteResource(ctx context.Context, resourceUuid uuid.UUID) error {
-	_, err := q.db.Exec(ctx, softDeleteResource, resourceUuid)
+// Deletion is a desired-state change, not an immediate erase: the row flips to
+// state='deleting' but keeps deleted_at NULL so it stays IN the work feed and
+// PullWork ships it to its agent as a teardown envelope. Only the agent's
+// "removed" report finalizes the delete (ApplyAgentReport with finalize) —
+// otherwise the workload would keep running on the host with no record of it.
+func (q *Queries) MarkResourceDeleting(ctx context.Context, resourceUuid uuid.UUID) error {
+	_, err := q.db.Exec(ctx, markResourceDeleting, resourceUuid)
 	return err
 }
 
 const updateResourceSpec = `-- name: UpdateResourceSpec :one
 UPDATE resources
-SET spec = $2, metadata = $3, generation = generation + 1, state = 'pending', updated_at = now()
+SET spec = $2, metadata = $3, generation = generation + 1, state = 'pending',
+    attempts = 0, next_attempt_at = NULL, updated_at = now()
 WHERE resource_uuid = $1 AND deleted_at IS NULL
-RETURNING resource_id, resource_uuid, tenant_id, project_id, provider_id, agent_id, owner_resource_id, kind, name, state, spec, status, generation, observed_generation, metadata, created_by, updated_by, created_at, updated_at, deleted_at
+RETURNING resource_id, resource_uuid, tenant_id, project_id, provider_id, agent_id, owner_resource_id, kind, name, state, spec, status, generation, observed_generation, leased_until, attempts, next_attempt_at, metadata, created_by, updated_by, created_at, updated_at, deleted_at
 `
 
 type UpdateResourceSpecParams struct {
@@ -365,6 +548,10 @@ type UpdateResourceSpecParams struct {
 }
 
 // A spec change bumps generation and re-arms the reconciler (state -> pending).
+// It also resets the retry budget (attempts/next_attempt_at): a resource parked
+// as 'failed' after exhausting its budget gets a fresh budget only when its
+// desired state actually changes — never by the failing spec being retried
+// forever on its own.
 func (q *Queries) UpdateResourceSpec(ctx context.Context, arg UpdateResourceSpecParams) (Resource, error) {
 	row := q.db.QueryRow(ctx, updateResourceSpec, arg.ResourceUuid, arg.Spec, arg.Metadata)
 	var i Resource
@@ -383,6 +570,9 @@ func (q *Queries) UpdateResourceSpec(ctx context.Context, arg UpdateResourceSpec
 		&i.Status,
 		&i.Generation,
 		&i.ObservedGeneration,
+		&i.LeasedUntil,
+		&i.Attempts,
+		&i.NextAttemptAt,
 		&i.Metadata,
 		&i.CreatedBy,
 		&i.UpdatedBy,
@@ -397,7 +587,7 @@ const updateResourceStatus = `-- name: UpdateResourceStatus :one
 UPDATE resources
 SET status = $2, state = $3, observed_generation = $4, updated_at = now()
 WHERE resource_uuid = $1 AND deleted_at IS NULL
-RETURNING resource_id, resource_uuid, tenant_id, project_id, provider_id, agent_id, owner_resource_id, kind, name, state, spec, status, generation, observed_generation, metadata, created_by, updated_by, created_at, updated_at, deleted_at
+RETURNING resource_id, resource_uuid, tenant_id, project_id, provider_id, agent_id, owner_resource_id, kind, name, state, spec, status, generation, observed_generation, leased_until, attempts, next_attempt_at, metadata, created_by, updated_by, created_at, updated_at, deleted_at
 `
 
 type UpdateResourceStatusParams struct {
@@ -431,6 +621,9 @@ func (q *Queries) UpdateResourceStatus(ctx context.Context, arg UpdateResourceSt
 		&i.Status,
 		&i.Generation,
 		&i.ObservedGeneration,
+		&i.LeasedUntil,
+		&i.Attempts,
+		&i.NextAttemptAt,
 		&i.Metadata,
 		&i.CreatedBy,
 		&i.UpdatedBy,

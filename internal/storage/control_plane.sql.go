@@ -12,7 +12,7 @@ import (
 )
 
 const getControlPlane = `-- name: GetControlPlane :one
-SELECT id, auth_tenant_uuid, data, control_private_key_pem, setup_completed_at, created_at, updated_at FROM control_plane WHERE id = 1
+SELECT id, auth_tenant_uuid, data, control_private_key_pem, deployment_mode, setup_completed_at, created_at, updated_at FROM control_plane WHERE id = 1
 `
 
 func (q *Queries) GetControlPlane(ctx context.Context) (ControlPlane, error) {
@@ -23,6 +23,7 @@ func (q *Queries) GetControlPlane(ctx context.Context) (ControlPlane, error) {
 		&i.AuthTenantUuid,
 		&i.Data,
 		&i.ControlPrivateKeyPem,
+		&i.DeploymentMode,
 		&i.SetupCompletedAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
@@ -31,21 +32,23 @@ func (q *Queries) GetControlPlane(ctx context.Context) (ControlPlane, error) {
 }
 
 const upsertControlPlane = `-- name: UpsertControlPlane :one
-INSERT INTO control_plane (id, auth_tenant_uuid, data, control_private_key_pem, setup_completed_at)
-VALUES (1, $1, $2, $3, $4)
+INSERT INTO control_plane (id, auth_tenant_uuid, data, control_private_key_pem, deployment_mode, setup_completed_at)
+VALUES (1, $1, $2, $3, $4, $5)
 ON CONFLICT (id) DO UPDATE
 SET auth_tenant_uuid        = EXCLUDED.auth_tenant_uuid,
     data                    = EXCLUDED.data,
     control_private_key_pem = EXCLUDED.control_private_key_pem,
+    deployment_mode         = EXCLUDED.deployment_mode,
     setup_completed_at      = EXCLUDED.setup_completed_at,
     updated_at              = now()
-RETURNING id, auth_tenant_uuid, data, control_private_key_pem, setup_completed_at, created_at, updated_at
+RETURNING id, auth_tenant_uuid, data, control_private_key_pem, deployment_mode, setup_completed_at, created_at, updated_at
 `
 
 type UpsertControlPlaneParams struct {
 	AuthTenantUuid       pgtype.UUID        `json:"auth_tenant_uuid"`
 	Data                 []byte             `json:"data"`
 	ControlPrivateKeyPem string             `json:"control_private_key_pem"`
+	DeploymentMode       string             `json:"deployment_mode"`
 	SetupCompletedAt     pgtype.Timestamptz `json:"setup_completed_at"`
 }
 
@@ -54,6 +57,7 @@ func (q *Queries) UpsertControlPlane(ctx context.Context, arg UpsertControlPlane
 		arg.AuthTenantUuid,
 		arg.Data,
 		arg.ControlPrivateKeyPem,
+		arg.DeploymentMode,
 		arg.SetupCompletedAt,
 	)
 	var i ControlPlane
@@ -62,6 +66,7 @@ func (q *Queries) UpsertControlPlane(ctx context.Context, arg UpsertControlPlane
 		&i.AuthTenantUuid,
 		&i.Data,
 		&i.ControlPrivateKeyPem,
+		&i.DeploymentMode,
 		&i.SetupCompletedAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,

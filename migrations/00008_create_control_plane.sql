@@ -10,6 +10,13 @@ CREATE TABLE IF NOT EXISTS control_plane (
     auth_tenant_uuid        UUID,
     data                    JSONB NOT NULL DEFAULT '{}',
     control_private_key_pem TEXT  NOT NULL DEFAULT '',
+    -- deployment_mode is stamped once at setup from DEPLOYMENT_MODE and is
+    -- IMMUTABLE for the life of the install: every reconciled resource was
+    -- materialized on that substrate (docker containers vs kubernetes objects),
+    -- so flipping the mode later would orphan every running workload while the
+    -- agents rebuild the world on a different runtime. Boot refuses to start if
+    -- the environment disagrees with this stamp.
+    deployment_mode         VARCHAR(20) NOT NULL DEFAULT 'docker',
     setup_completed_at      TIMESTAMPTZ,
     created_at              TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at              TIMESTAMPTZ NOT NULL DEFAULT now()

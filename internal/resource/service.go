@@ -228,42 +228,229 @@ func (s *Service) UpdateStatus(ctx context.Context, id uuid.UUID, in UpdateStatu
 	return &r, nil
 }
 
+// Delete flips the resource to desired-state 'deleting' WITHOUT stamping
+// deleted_at: the row must stay in the work feed so PullWork can ship a
+// teardown envelope to the owning agent. Erasing the record first would leave
+// the actual workload running on the host with nothing left to reconcile it
+// away — the delete only finalizes when the agent reports state "removed".
 func (s *Service) Delete(ctx context.Context, id uuid.UUID) error {
-	return s.q.SoftDeleteResource(ctx, id)
+	return s.q.MarkResourceDeleting(ctx, id)
 }
 
 // WorkItem is a resource that needs reconciling — the minimal shape an executor
 // (agent) needs to act on. It skips project resolution so the reconciler feed
-// stays cheap.
+// stays cheap. State and Metadata ride along because the gateway derives the
+// envelope's teardown/tier fields from them.
 type WorkItem struct {
 	UUID       uuid.UUID
 	Kind       string
 	Name       string
+	State      string
 	Spec       map[string]any
+	Metadata   map[string]any
 	Generation int64
 }
 
-// OutOfSync returns resources whose observed state lags their desired spec — the
-// work feed Core hands to agents via the AgentGateway.
+// OutOfSync returns resources whose observed state lags their desired spec — a
+// read-only view of the work feed (no lease, no assignment). The AgentGateway
+// uses ClaimForAgent instead, which atomically leases what it hands out.
 func (s *Service) OutOfSync(ctx context.Context, limit int) ([]WorkItem, error) {
-	if limit < 1 || limit > 100 {
-		limit = 20
-	}
-	rows, err := s.q.ListOutOfSyncResources(ctx, int32(limit))
+	rows, err := s.q.ListOutOfSyncResources(ctx, int32(normalizeFeedLimit(limit)))
 	if err != nil {
 		return nil, err
 	}
+	return toWorkItems(rows), nil
+}
+
+// ClaimForAgent atomically claims up to limit feed items for one agent and
+// leases them for leaseTTL. Items already assigned to the agent are re-fed
+// (sticky assignment); unassigned items are claimed on first pull. Two agents
+// can never claim the same item concurrently — the claim query locks candidate
+// rows with FOR UPDATE SKIP LOCKED and stamps agent_id + leased_until in a
+// single statement.
+func (s *Service) ClaimForAgent(ctx context.Context, agentID int64, limit int, leaseTTL time.Duration) ([]WorkItem, error) {
+	if leaseTTL <= 0 {
+		leaseTTL = time.Minute
+	}
+	rows, err := s.q.ClaimAgentWork(ctx, storage.ClaimAgentWorkParams{
+		AgentID:      pgtype.Int8{Int64: agentID, Valid: true},
+		LeaseSeconds: leaseTTL.Seconds(),
+		MaxItems:     int32(normalizeFeedLimit(limit)),
+	})
+	if err != nil {
+		return nil, err
+	}
+	return toWorkItems(rows), nil
+}
+
+// Retry backoff bounds for failed convergence attempts. A failed item re-enters
+// the feed only after min(retryCap, retryBase * 2^attempts) — fast enough that
+// a transient failure (image registry blip, engine restart) recovers in
+// seconds, slow enough that a genuinely broken spec cannot make its agent
+// hot-loop pull→fail→pull against the same poison pill.
+const (
+	retryBase = 5 * time.Second
+	retryCap  = 5 * time.Minute
+)
+
+// nextBackoff computes the exponential backoff delay for the given
+// (post-increment) attempt count, capped at retryCap.
+func nextBackoff(attempts int32) time.Duration {
+	if attempts < 1 {
+		attempts = 1
+	}
+	d := retryBase
+	for i := int32(1); i < attempts; i++ {
+		d *= 2
+		if d >= retryCap {
+			return retryCap
+		}
+	}
+	if d > retryCap {
+		return retryCap
+	}
+	return d
+}
+
+// AgentReportInput is one status report from an agent, as received by the
+// AgentGateway.
+type AgentReportInput struct {
+	State              string
+	Status             map[string]any
+	ObservedGeneration int64
+}
+
+// ApplyAgentReport records one agent status report against a resource, with
+// ownership enforced: the resource's assigned agent must be the caller. This
+// is the per-resource authorization the gateway's single `core:agent:gateway`
+// permission deliberately does not provide — any agent principal may talk to
+// the gateway, but it can only ever write status for resources leased to it.
+//
+// State mapping (the agent's vocabulary is defined in
+// ../maintainerd-agent/internal/worker/worker.go):
+//   - "running"  → converged: attempts/backoff reset, observed_generation
+//     advances, lease released.
+//   - "failed"   → retryable failure: attempts++, exponential backoff
+//     (nextBackoff), state 'error' — or terminal 'failed' once attempts
+//     reaches budget; observed_generation is deliberately NOT advanced so the
+//     item stays out-of-sync and re-enters the feed after the backoff. A
+//     failing teardown stays 'deleting' (still under budget) so the teardown
+//     intent survives retries.
+//   - "removed"  → teardown complete: finalizes the delete (deleted_at
+//     stamped) when the resource was 'deleting'; otherwise recorded as a
+//     plain observation.
+//   - anything else ("exited", "unhealthy", ... — drift observations) →
+//     recorded as-is; attempts/backoff untouched.
+func (s *Service) ApplyAgentReport(ctx context.Context, agentID int64, resourceUUID uuid.UUID, in AgentReportInput, attemptBudget int) (*Resource, error) {
+	current, err := s.q.GetResourceByUUID(ctx, resourceUUID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, apperror.NewNotFound("resource")
+	}
+	if err != nil {
+		return nil, err
+	}
+	// Ownership: only the assigned agent may report. Fail closed on an
+	// unassigned row too — an unclaimed resource has no legitimate reporter.
+	if !current.AgentID.Valid || current.AgentID.Int64 != agentID {
+		return nil, apperror.NewForbidden("resource is not assigned to this agent")
+	}
+
+	statusJSON := current.Status
+	if in.Status != nil {
+		if statusJSON, err = marshalMap(in.Status); err != nil {
+			return nil, apperror.NewValidation("invalid status")
+		}
+	}
+	if attemptBudget < 1 {
+		attemptBudget = 10
+	}
+
+	params := storage.ApplyAgentReportParams{
+		ResourceUuid:       resourceUUID,
+		Status:             statusJSON,
+		ObservedGeneration: in.ObservedGeneration,
+		Attempts:           current.Attempts,
+		NextAttemptAt:      current.NextAttemptAt,
+	}
+	switch in.State {
+	case "running":
+		params.State = "running"
+		params.Attempts = 0
+		params.NextAttemptAt = pgtype.Timestamptz{}
+	case "failed":
+		attempts := current.Attempts + 1
+		params.Attempts = attempts
+		// Never advance observed_generation on failure: the item must remain
+		// out-of-sync so the feed re-dispatches it after the backoff.
+		params.ObservedGeneration = 0
+		if int(attempts) >= attemptBudget {
+			// Budget exhausted: park terminally. Only a spec change
+			// (UpdateResourceSpec resets attempts + re-arms state) revives it.
+			params.State = "failed"
+			params.NextAttemptAt = pgtype.Timestamptz{}
+		} else {
+			params.NextAttemptAt = pgtype.Timestamptz{Time: time.Now().Add(nextBackoff(attempts)), Valid: true}
+			if current.State == "deleting" {
+				params.State = "deleting" // keep the teardown intent across retries
+			} else {
+				params.State = "error"
+			}
+		}
+	case "removed":
+		if current.State == "deleting" {
+			params.State = "removed"
+			params.Finalize = true
+			params.ObservedGeneration = current.Generation
+		} else {
+			// A "removed" observation outside a teardown (should not happen —
+			// the agent only reports it after tearing down) is recorded but
+			// must not silently finalize a delete nobody requested.
+			params.State = in.State
+		}
+	default:
+		if in.State == "" {
+			params.State = current.State
+		} else {
+			params.State = in.State
+		}
+	}
+
+	row, err := s.q.ApplyAgentReport(ctx, params)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, apperror.NewNotFound("resource")
+	}
+	if err != nil {
+		return nil, err
+	}
+	projectUUID, err := s.resolveProjectUUID(ctx, row.ProjectID)
+	if err != nil {
+		return nil, err
+	}
+	r := toResource(row, projectUUID)
+	return &r, nil
+}
+
+func toWorkItems(rows []storage.Resource) []WorkItem {
 	items := make([]WorkItem, 0, len(rows))
 	for _, r := range rows {
 		items = append(items, WorkItem{
 			UUID:       r.ResourceUuid,
 			Kind:       r.Kind,
 			Name:       r.Name,
+			State:      r.State,
 			Spec:       jsonutil.JSONToMap(r.Spec),
+			Metadata:   jsonutil.JSONToMap(r.Metadata),
 			Generation: r.Generation,
 		})
 	}
-	return items, nil
+	return items
+}
+
+func normalizeFeedLimit(limit int) int {
+	if limit < 1 || limit > 100 {
+		return 20
+	}
+	return limit
 }
 
 func (s *Service) resolveProjectUUID(ctx context.Context, projectID int64) (uuid.UUID, error) {

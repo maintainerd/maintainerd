@@ -16,7 +16,15 @@ import (
 
 // Agent is the on-host executor that pulls work from Core and runs it against
 // the local already-installed runtime.
+//
+// ID and BoundSubject are internal control-plane fields (json:"-"): the
+// numeric ID keys the resource-assignment queries, and BoundSubject is the
+// verified token subject the agent's identity is pinned to — neither belongs
+// on the public HTTP payload (the subject would hand an attacker the exact
+// principal name to target).
 type Agent struct {
+	ID           int64          `json:"-"`
+	BoundSubject string         `json:"-"`
 	UUID         uuid.UUID      `json:"agent_uuid"`
 	TenantUUID   uuid.UUID      `json:"tenant_uuid"`
 	Name         string         `json:"name"`
@@ -176,6 +184,66 @@ func (s *Service) Update(ctx context.Context, id uuid.UUID, in UpdateInput) (*Ag
 	return &a, nil
 }
 
+// BindSubject pins the agent row to the verified token subject that Registers
+// it. The bind is first-writer-wins and sticky: re-binding with the SAME
+// subject is an idempotent no-op, while a different subject gets Forbidden —
+// an agent UUID is discoverable (logs, APIs, config files), so possession of
+// the UUID alone must never let a second principal adopt the agent's identity.
+func (s *Service) BindSubject(ctx context.Context, id uuid.UUID, subject string) (*Agent, error) {
+	if subject == "" {
+		return nil, apperror.NewValidation("subject is required")
+	}
+	row, err := s.q.BindAgentSubject(ctx, storage.BindAgentSubjectParams{
+		AgentUuid:    id,
+		BoundSubject: subject,
+	})
+	if errors.Is(err, pgx.ErrNoRows) {
+		// No row matched: either the agent does not exist, or it is already
+		// bound to a different subject. Distinguish so the caller can map to
+		// NotFound vs PermissionDenied.
+		if _, gerr := s.q.GetAgentByUUID(ctx, id); errors.Is(gerr, pgx.ErrNoRows) {
+			return nil, apperror.NewNotFound("agent")
+		}
+		return nil, apperror.NewForbidden("agent is bound to a different subject")
+	}
+	if err != nil {
+		return nil, err
+	}
+	tenantUUID, err := s.resolveTenantUUID(ctx, row.TenantID)
+	if err != nil {
+		return nil, err
+	}
+	a := toAgent(row, tenantUUID)
+	return &a, nil
+}
+
+// RequireSubject loads the agent and enforces that the caller's verified token
+// subject matches the row's bound subject. An unbound row fails closed too:
+// until an authenticated Register has pinned the identity, no other gateway
+// call may act as that agent (otherwise the window before first Register would
+// be an impersonation window).
+func (s *Service) RequireSubject(ctx context.Context, id uuid.UUID, subject string) (*Agent, error) {
+	row, err := s.q.GetAgentByUUID(ctx, id)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, apperror.NewNotFound("agent")
+	}
+	if err != nil {
+		return nil, err
+	}
+	if row.BoundSubject == "" {
+		return nil, apperror.NewForbidden("agent is not bound to a subject yet — Register first")
+	}
+	if subject == "" || row.BoundSubject != subject {
+		return nil, apperror.NewForbidden("agent is bound to a different subject")
+	}
+	tenantUUID, err := s.resolveTenantUUID(ctx, row.TenantID)
+	if err != nil {
+		return nil, err
+	}
+	a := toAgent(row, tenantUUID)
+	return &a, nil
+}
+
 // Heartbeat marks the agent online and stamps last_seen_at. The agent calls this
 // on its poll interval so Core can detect offline agents.
 func (s *Service) Heartbeat(ctx context.Context, id uuid.UUID) (*Agent, error) {
@@ -208,6 +276,8 @@ func (s *Service) resolveTenantUUID(ctx context.Context, tenantID int64) (uuid.U
 
 func toAgent(m storage.Agent, tenantUUID uuid.UUID) Agent {
 	a := Agent{
+		ID:           m.AgentID,
+		BoundSubject: m.BoundSubject,
 		UUID:         m.AgentUuid,
 		TenantUUID:   tenantUUID,
 		Name:         m.Name,

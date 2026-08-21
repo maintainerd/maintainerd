@@ -21,5 +21,7 @@ type Repository interface {
 	UpdateResourceSpec(ctx context.Context, arg storage.UpdateResourceSpecParams) (storage.Resource, error)
 	UpdateResourceStatus(ctx context.Context, arg storage.UpdateResourceStatusParams) (storage.Resource, error)
 	ListOutOfSyncResources(ctx context.Context, limit int32) ([]storage.Resource, error)
-	SoftDeleteResource(ctx context.Context, resourceUUID uuid.UUID) error
+	ClaimAgentWork(ctx context.Context, arg storage.ClaimAgentWorkParams) ([]storage.Resource, error)
+	ApplyAgentReport(ctx context.Context, arg storage.ApplyAgentReportParams) (storage.Resource, error)
+	MarkResourceDeleting(ctx context.Context, resourceUUID uuid.UUID) error
 }
