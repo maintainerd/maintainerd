@@ -38,6 +38,13 @@ type Config struct {
 	AuthEndpoint   string // = AuthAddr
 	SecretEndpoint string // SECRET_ENDPOINT
 	DockerEndpoint string // DOCKER_ENDPOINT
+	// Steward catalog settings.
+	SecretAudience    string // SECRET_API_AUDIENCE
+	RuntimeAudience   string // RUNTIME_API_AUDIENCE
+	AgentAudience     string // AGENT_API_AUDIENCE
+	StewardKeyDir     string // STEWARD_KEY_DIR
+	SystemAuthImage   string // SYSTEM_AUTH_IMAGE
+	SystemSecretImage string // SYSTEM_SECRET_IMAGE
 
 	// DeploymentMode (DEPLOYMENT_MODE: docker|kubernetes, default docker) is the
 	// substrate this install reconciles onto. It is stamped into control_plane at
@@ -100,10 +107,29 @@ func LoadConfig() Config {
 		ConsoleDomain:       consoleDomain,
 		ConsoleRedirectURIs: envList("CORE_CONSOLE_REDIRECT_URIS", "https://"+consoleDomain+"/auth/callback"),
 
-		AuthEndpoint:   authAddr,
-		SecretEndpoint: env("SECRET_ENDPOINT", ""),
-		DockerEndpoint: env("DOCKER_ENDPOINT", ""),
+		AuthEndpoint:      authAddr,
+		SecretEndpoint:    env("SECRET_ENDPOINT", ""),
+		DockerEndpoint:    env("DOCKER_ENDPOINT", ""),
+		SecretAudience:    env("SECRET_API_AUDIENCE", "https://secret.maintainerd.local"),
+		RuntimeAudience:   env("RUNTIME_API_AUDIENCE", "https://runtime.maintainerd.local"),
+		AgentAudience:     env("AGENT_API_AUDIENCE", "https://agent.maintainerd.local"),
+		StewardKeyDir:     env("STEWARD_KEY_DIR", "/var/lib/maintainerd-core/service-clients"),
+		SystemAuthImage:   env("SYSTEM_AUTH_IMAGE", ""),
+		SystemSecretImage: env("SYSTEM_SECRET_IMAGE", ""),
 
 		DeploymentMode: env("DEPLOYMENT_MODE", "docker"),
+	}
+}
+
+func (c Config) AudienceFor(service string) string {
+	switch service {
+	case "secret":
+		return c.SecretAudience
+	case "runtime":
+		return c.RuntimeAudience
+	case "agent":
+		return c.AgentAudience
+	default:
+		return ""
 	}
 }

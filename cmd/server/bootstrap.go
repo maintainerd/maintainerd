@@ -105,19 +105,47 @@ func run(parent context.Context) error {
 		go application.SetupOrch.RunWithRetry(ctx)
 	}
 
+	agentCACertPEM, err := readOptionalFile("AGENT_CA_CERT_FILE", config.AgentCACertFile)
+	if err != nil {
+		return err
+	}
+	agentCAKeyPEM, err := readOptionalFile("AGENT_CA_KEY_FILE", config.AgentCAKeyFile)
+	if err != nil {
+		return err
+	}
+
 	// Serve the HTTP REST API and the core.v1 AgentGateway gRPC concurrently.
 	// If either fails, the group context cancels and the other drains.
 	gateway := grpcserver.NewAgentGateway(application.AgentSvc, application.ResourceSvc, grpcserver.Options{
 		EnforceBinding: grpcGuard.Mode == grpcserver.GuardEnforced,
 		LeaseTTL:       config.GatewayLeaseTTL,
 		AttemptBudget:  config.GatewayAttemptBudget,
+		AgentCACertPEM: agentCACertPEM,
+		AgentCAKeyPEM:  agentCAKeyPEM,
+		AgentCertTTL:   config.AgentCertTTL,
 	})
 	g, gctx := errgroup.WithContext(ctx)
 	g.Go(func() error { return appserver.StartRESTServer(gctx, appserver.Router(application, httpGuard)) })
 	g.Go(func() error {
-		return grpcserver.Serve(gctx, grpcListenAddr(), gateway, grpcGuard)
+		return grpcserver.Serve(gctx, grpcListenAddr(), gateway, grpcGuard, grpcserver.TLSOptions{
+			CertFile:          config.GRPCTLSCertFile,
+			KeyFile:           config.GRPCTLSKeyFile,
+			ClientCAFile:      config.GRPCClientCAFile,
+			RequireClientCert: config.GRPCClientCAFile != "" && grpcGuard.Mode == grpcserver.GuardEnforced,
+		})
 	})
 	return g.Wait()
+}
+
+func readOptionalFile(label, path string) ([]byte, error) {
+	if path == "" {
+		return nil, nil
+	}
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("read %s %q: %w", label, path, err)
+	}
+	return b, nil
 }
 
 // verifyDeploymentMode refuses to boot when DEPLOYMENT_MODE disagrees with the

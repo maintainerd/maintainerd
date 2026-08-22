@@ -11,6 +11,16 @@ CREATE TABLE IF NOT EXISTS agents (
     endpoint     TEXT NOT NULL DEFAULT '',
     version      VARCHAR(50) NOT NULL DEFAULT '',
     capabilities JSONB NOT NULL DEFAULT '[]',
+    -- One-time enrollment secret. Core returns the plaintext join token only
+    -- from CreateAgent; after that only this SHA-256 hex digest remains. The
+    -- agent presents the token with a CSR to AgentGateway.Enroll, then Core
+    -- stamps join_token_used_at and never accepts it again.
+    join_token_hash TEXT NOT NULL DEFAULT '',
+    join_token_used_at TIMESTAMPTZ,
+    -- Last client certificate Core issued for this agent. Stored for operator
+    -- visibility/debugging and future rotation/audit; the mTLS trust root is
+    -- still the configured agent client CA.
+    client_cert_pem TEXT NOT NULL DEFAULT '',
     -- bound_subject is the verified token subject (the agent's auth client id /
     -- service principal) captured on the agent's FIRST authenticated Register.
     -- Every later gateway call must present the same subject: knowing an agent's

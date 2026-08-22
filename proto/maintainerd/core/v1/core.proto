@@ -9,6 +9,8 @@ option go_package = "github.com/maintainerd/core/gen/maintainerd/core/v1;corev1"
 
 // AgentGateway is Core's agent-facing control plane.
 service AgentGatewayService {
+  // Enroll exchanges a one-time join token + CSR for the agent's mTLS client certificate.
+  rpc Enroll(EnrollRequest) returns (EnrollResponse);
   // Register announces an agent (marks it online, records version/capabilities).
   rpc Register(RegisterRequest) returns (RegisterResponse);
   // Heartbeat keeps an agent marked online and stamps last-seen.
@@ -17,6 +19,18 @@ service AgentGatewayService {
   rpc PullWork(PullWorkRequest) returns (PullWorkResponse);
   // ReportStatus records observed state the agent produced after acting.
   rpc ReportStatus(ReportStatusRequest) returns (ReportStatusResponse);
+}
+
+message EnrollRequest {
+  string agent_uuid = 1;
+  string join_token = 2;
+  string csr_pem = 3;
+}
+
+message EnrollResponse {
+  string certificate_pem = 1;
+  string ca_certificate_pem = 2;
+  string expires_at = 3;
 }
 
 message RegisterRequest {

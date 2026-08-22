@@ -3,9 +3,11 @@ package agent
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -52,6 +54,14 @@ func (f *fakeRepo) BindAgentSubject(_ context.Context, arg storage.BindAgentSubj
 		return storage.Agent{}, pgx.ErrNoRows
 	}
 	f.row.BoundSubject = arg.BoundSubject
+	return f.row, nil
+}
+func (f *fakeRepo) MarkAgentEnrolled(_ context.Context, arg storage.MarkAgentEnrolledParams) (storage.Agent, error) {
+	if !f.exists || arg.AgentUuid != f.row.AgentUuid || f.row.JoinTokenUsedAt.Valid {
+		return storage.Agent{}, pgx.ErrNoRows
+	}
+	f.row.JoinTokenUsedAt = pgtype.Timestamptz{Time: time.Now(), Valid: true}
+	f.row.ClientCertPem = arg.ClientCertPem
 	return f.row, nil
 }
 func (f *fakeRepo) AgentHeartbeat(context.Context, uuid.UUID) (storage.Agent, error) {

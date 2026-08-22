@@ -11,6 +11,7 @@ import (
 // Repository is the resource bounded context's data contract. Resources are the
 // declarative core: a desired spec reconciled toward an observed status.
 type Repository interface {
+	GetTenantByID(ctx context.Context, tenantID int64) (storage.Tenant, error)
 	GetProjectByUUID(ctx context.Context, projectUUID uuid.UUID) (storage.Project, error)
 	GetProjectByID(ctx context.Context, projectID int64) (storage.Project, error)
 	GetProviderByUUID(ctx context.Context, providerUUID uuid.UUID) (storage.Provider, error)

@@ -89,6 +89,7 @@ require (
 	github.com/jackc/pgservicefile v0.0.0-20240606120523-5a60cdf6a761 // indirect
 	github.com/jackc/puddle/v2 v2.2.2 // indirect
 	github.com/kylelemons/godebug v1.1.0 // indirect
+	github.com/maintainerd/kit v0.0.0-00010101000000-000000000000
 	github.com/mfridman/interpolate v0.0.2 // indirect
 	github.com/mitchellh/go-homedir v1.1.0 // indirect
 	github.com/mitchellh/mapstructure v1.5.0 // indirect
@@ -129,3 +130,5 @@ require (
 replace github.com/maintainerd/sdk => ../maintainerd-sdk
 
 replace github.com/maintainerd/secret => ../maintainerd-secret
+
+replace github.com/maintainerd/kit => ../maintainerd-kit

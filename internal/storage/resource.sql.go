@@ -23,7 +23,7 @@ SET status = $2,
     deleted_at = CASE WHEN $7::bool THEN now() ELSE deleted_at END,
     updated_at = now()
 WHERE resource_uuid = $1 AND deleted_at IS NULL
-RETURNING resource_id, resource_uuid, tenant_id, project_id, provider_id, agent_id, owner_resource_id, kind, name, state, spec, status, generation, observed_generation, leased_until, attempts, next_attempt_at, metadata, created_by, updated_by, created_at, updated_at, deleted_at
+RETURNING resource_id, resource_uuid, tenant_id, project_id, provider_id, agent_id, owner_resource_id, mrn_service, mrn_tenant, mrn_project, mrn_resource_type, mrn_resource_path, kind, name, state, spec, status, generation, observed_generation, leased_until, attempts, next_attempt_at, metadata, created_by, updated_by, created_at, updated_at, deleted_at
 `
 
 type ApplyAgentReportParams struct {
@@ -63,6 +63,11 @@ func (q *Queries) ApplyAgentReport(ctx context.Context, arg ApplyAgentReportPara
 		&i.ProviderID,
 		&i.AgentID,
 		&i.OwnerResourceID,
+		&i.MrnService,
+		&i.MrnTenant,
+		&i.MrnProject,
+		&i.MrnResourceType,
+		&i.MrnResourcePath,
 		&i.Kind,
 		&i.Name,
 		&i.State,
@@ -87,7 +92,7 @@ const assignResourceAgent = `-- name: AssignResourceAgent :one
 UPDATE resources
 SET agent_id = $2, updated_at = now()
 WHERE resource_uuid = $1 AND deleted_at IS NULL
-RETURNING resource_id, resource_uuid, tenant_id, project_id, provider_id, agent_id, owner_resource_id, kind, name, state, spec, status, generation, observed_generation, leased_until, attempts, next_attempt_at, metadata, created_by, updated_by, created_at, updated_at, deleted_at
+RETURNING resource_id, resource_uuid, tenant_id, project_id, provider_id, agent_id, owner_resource_id, mrn_service, mrn_tenant, mrn_project, mrn_resource_type, mrn_resource_path, kind, name, state, spec, status, generation, observed_generation, leased_until, attempts, next_attempt_at, metadata, created_by, updated_by, created_at, updated_at, deleted_at
 `
 
 type AssignResourceAgentParams struct {
@@ -106,6 +111,11 @@ func (q *Queries) AssignResourceAgent(ctx context.Context, arg AssignResourceAge
 		&i.ProviderID,
 		&i.AgentID,
 		&i.OwnerResourceID,
+		&i.MrnService,
+		&i.MrnTenant,
+		&i.MrnProject,
+		&i.MrnResourceType,
+		&i.MrnResourcePath,
 		&i.Kind,
 		&i.Name,
 		&i.State,
@@ -143,7 +153,7 @@ WHERE resource_id IN (
     LIMIT $3
     FOR UPDATE SKIP LOCKED
 )
-RETURNING resource_id, resource_uuid, tenant_id, project_id, provider_id, agent_id, owner_resource_id, kind, name, state, spec, status, generation, observed_generation, leased_until, attempts, next_attempt_at, metadata, created_by, updated_by, created_at, updated_at, deleted_at
+RETURNING resource_id, resource_uuid, tenant_id, project_id, provider_id, agent_id, owner_resource_id, mrn_service, mrn_tenant, mrn_project, mrn_resource_type, mrn_resource_path, kind, name, state, spec, status, generation, observed_generation, leased_until, attempts, next_attempt_at, metadata, created_by, updated_by, created_at, updated_at, deleted_at
 `
 
 type ClaimAgentWorkParams struct {
@@ -175,6 +185,11 @@ func (q *Queries) ClaimAgentWork(ctx context.Context, arg ClaimAgentWorkParams) 
 			&i.ProviderID,
 			&i.AgentID,
 			&i.OwnerResourceID,
+			&i.MrnService,
+			&i.MrnTenant,
+			&i.MrnProject,
+			&i.MrnResourceType,
+			&i.MrnResourcePath,
 			&i.Kind,
 			&i.Name,
 			&i.State,
@@ -214,9 +229,13 @@ func (q *Queries) CountResourcesByProject(ctx context.Context, projectID int64) 
 }
 
 const createResource = `-- name: CreateResource :one
-INSERT INTO resources (tenant_id, project_id, provider_id, agent_id, owner_resource_id, kind, name, spec, metadata)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-RETURNING resource_id, resource_uuid, tenant_id, project_id, provider_id, agent_id, owner_resource_id, kind, name, state, spec, status, generation, observed_generation, leased_until, attempts, next_attempt_at, metadata, created_by, updated_by, created_at, updated_at, deleted_at
+INSERT INTO resources (
+    tenant_id, project_id, provider_id, agent_id, owner_resource_id,
+    mrn_service, mrn_tenant, mrn_project, mrn_resource_type, mrn_resource_path,
+    kind, name, spec, metadata
+)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+RETURNING resource_id, resource_uuid, tenant_id, project_id, provider_id, agent_id, owner_resource_id, mrn_service, mrn_tenant, mrn_project, mrn_resource_type, mrn_resource_path, kind, name, state, spec, status, generation, observed_generation, leased_until, attempts, next_attempt_at, metadata, created_by, updated_by, created_at, updated_at, deleted_at
 `
 
 type CreateResourceParams struct {
@@ -225,6 +244,11 @@ type CreateResourceParams struct {
 	ProviderID      pgtype.Int8 `json:"provider_id"`
 	AgentID         pgtype.Int8 `json:"agent_id"`
 	OwnerResourceID pgtype.Int8 `json:"owner_resource_id"`
+	MrnService      string      `json:"mrn_service"`
+	MrnTenant       string      `json:"mrn_tenant"`
+	MrnProject      string      `json:"mrn_project"`
+	MrnResourceType string      `json:"mrn_resource_type"`
+	MrnResourcePath string      `json:"mrn_resource_path"`
 	Kind            string      `json:"kind"`
 	Name            string      `json:"name"`
 	Spec            []byte      `json:"spec"`
@@ -238,6 +262,11 @@ func (q *Queries) CreateResource(ctx context.Context, arg CreateResourceParams) 
 		arg.ProviderID,
 		arg.AgentID,
 		arg.OwnerResourceID,
+		arg.MrnService,
+		arg.MrnTenant,
+		arg.MrnProject,
+		arg.MrnResourceType,
+		arg.MrnResourcePath,
 		arg.Kind,
 		arg.Name,
 		arg.Spec,
@@ -252,6 +281,11 @@ func (q *Queries) CreateResource(ctx context.Context, arg CreateResourceParams) 
 		&i.ProviderID,
 		&i.AgentID,
 		&i.OwnerResourceID,
+		&i.MrnService,
+		&i.MrnTenant,
+		&i.MrnProject,
+		&i.MrnResourceType,
+		&i.MrnResourcePath,
 		&i.Kind,
 		&i.Name,
 		&i.State,
@@ -273,7 +307,7 @@ func (q *Queries) CreateResource(ctx context.Context, arg CreateResourceParams) 
 }
 
 const getResourceByID = `-- name: GetResourceByID :one
-SELECT resource_id, resource_uuid, tenant_id, project_id, provider_id, agent_id, owner_resource_id, kind, name, state, spec, status, generation, observed_generation, leased_until, attempts, next_attempt_at, metadata, created_by, updated_by, created_at, updated_at, deleted_at FROM resources WHERE resource_id = $1 AND deleted_at IS NULL
+SELECT resource_id, resource_uuid, tenant_id, project_id, provider_id, agent_id, owner_resource_id, mrn_service, mrn_tenant, mrn_project, mrn_resource_type, mrn_resource_path, kind, name, state, spec, status, generation, observed_generation, leased_until, attempts, next_attempt_at, metadata, created_by, updated_by, created_at, updated_at, deleted_at FROM resources WHERE resource_id = $1 AND deleted_at IS NULL
 `
 
 func (q *Queries) GetResourceByID(ctx context.Context, resourceID int64) (Resource, error) {
@@ -287,6 +321,11 @@ func (q *Queries) GetResourceByID(ctx context.Context, resourceID int64) (Resour
 		&i.ProviderID,
 		&i.AgentID,
 		&i.OwnerResourceID,
+		&i.MrnService,
+		&i.MrnTenant,
+		&i.MrnProject,
+		&i.MrnResourceType,
+		&i.MrnResourcePath,
 		&i.Kind,
 		&i.Name,
 		&i.State,
@@ -308,7 +347,7 @@ func (q *Queries) GetResourceByID(ctx context.Context, resourceID int64) (Resour
 }
 
 const getResourceByUUID = `-- name: GetResourceByUUID :one
-SELECT resource_id, resource_uuid, tenant_id, project_id, provider_id, agent_id, owner_resource_id, kind, name, state, spec, status, generation, observed_generation, leased_until, attempts, next_attempt_at, metadata, created_by, updated_by, created_at, updated_at, deleted_at FROM resources WHERE resource_uuid = $1 AND deleted_at IS NULL
+SELECT resource_id, resource_uuid, tenant_id, project_id, provider_id, agent_id, owner_resource_id, mrn_service, mrn_tenant, mrn_project, mrn_resource_type, mrn_resource_path, kind, name, state, spec, status, generation, observed_generation, leased_until, attempts, next_attempt_at, metadata, created_by, updated_by, created_at, updated_at, deleted_at FROM resources WHERE resource_uuid = $1 AND deleted_at IS NULL
 `
 
 func (q *Queries) GetResourceByUUID(ctx context.Context, resourceUuid uuid.UUID) (Resource, error) {
@@ -322,6 +361,11 @@ func (q *Queries) GetResourceByUUID(ctx context.Context, resourceUuid uuid.UUID)
 		&i.ProviderID,
 		&i.AgentID,
 		&i.OwnerResourceID,
+		&i.MrnService,
+		&i.MrnTenant,
+		&i.MrnProject,
+		&i.MrnResourceType,
+		&i.MrnResourcePath,
 		&i.Kind,
 		&i.Name,
 		&i.State,
@@ -343,7 +387,7 @@ func (q *Queries) GetResourceByUUID(ctx context.Context, resourceUuid uuid.UUID)
 }
 
 const listOutOfSyncResources = `-- name: ListOutOfSyncResources :many
-SELECT resource_id, resource_uuid, tenant_id, project_id, provider_id, agent_id, owner_resource_id, kind, name, state, spec, status, generation, observed_generation, leased_until, attempts, next_attempt_at, metadata, created_by, updated_by, created_at, updated_at, deleted_at FROM resources
+SELECT resource_id, resource_uuid, tenant_id, project_id, provider_id, agent_id, owner_resource_id, mrn_service, mrn_tenant, mrn_project, mrn_resource_type, mrn_resource_path, kind, name, state, spec, status, generation, observed_generation, leased_until, attempts, next_attempt_at, metadata, created_by, updated_by, created_at, updated_at, deleted_at FROM resources
 WHERE (observed_generation < generation OR state IN ('deleting', 'error'))
   AND state <> 'failed'
   AND deleted_at IS NULL
@@ -377,6 +421,11 @@ func (q *Queries) ListOutOfSyncResources(ctx context.Context, limit int32) ([]Re
 			&i.ProviderID,
 			&i.AgentID,
 			&i.OwnerResourceID,
+			&i.MrnService,
+			&i.MrnTenant,
+			&i.MrnProject,
+			&i.MrnResourceType,
+			&i.MrnResourcePath,
 			&i.Kind,
 			&i.Name,
 			&i.State,
@@ -405,7 +454,7 @@ func (q *Queries) ListOutOfSyncResources(ctx context.Context, limit int32) ([]Re
 }
 
 const listResourcesByProject = `-- name: ListResourcesByProject :many
-SELECT resource_id, resource_uuid, tenant_id, project_id, provider_id, agent_id, owner_resource_id, kind, name, state, spec, status, generation, observed_generation, leased_until, attempts, next_attempt_at, metadata, created_by, updated_by, created_at, updated_at, deleted_at FROM resources
+SELECT resource_id, resource_uuid, tenant_id, project_id, provider_id, agent_id, owner_resource_id, mrn_service, mrn_tenant, mrn_project, mrn_resource_type, mrn_resource_path, kind, name, state, spec, status, generation, observed_generation, leased_until, attempts, next_attempt_at, metadata, created_by, updated_by, created_at, updated_at, deleted_at FROM resources
 WHERE project_id = $1 AND deleted_at IS NULL
 ORDER BY created_at DESC
 LIMIT $2 OFFSET $3
@@ -434,6 +483,11 @@ func (q *Queries) ListResourcesByProject(ctx context.Context, arg ListResourcesB
 			&i.ProviderID,
 			&i.AgentID,
 			&i.OwnerResourceID,
+			&i.MrnService,
+			&i.MrnTenant,
+			&i.MrnProject,
+			&i.MrnResourceType,
+			&i.MrnResourcePath,
 			&i.Kind,
 			&i.Name,
 			&i.State,
@@ -462,7 +516,7 @@ func (q *Queries) ListResourcesByProject(ctx context.Context, arg ListResourcesB
 }
 
 const listResourcesByTenant = `-- name: ListResourcesByTenant :many
-SELECT resource_id, resource_uuid, tenant_id, project_id, provider_id, agent_id, owner_resource_id, kind, name, state, spec, status, generation, observed_generation, leased_until, attempts, next_attempt_at, metadata, created_by, updated_by, created_at, updated_at, deleted_at FROM resources
+SELECT resource_id, resource_uuid, tenant_id, project_id, provider_id, agent_id, owner_resource_id, mrn_service, mrn_tenant, mrn_project, mrn_resource_type, mrn_resource_path, kind, name, state, spec, status, generation, observed_generation, leased_until, attempts, next_attempt_at, metadata, created_by, updated_by, created_at, updated_at, deleted_at FROM resources
 WHERE tenant_id = $1 AND deleted_at IS NULL
 ORDER BY created_at DESC
 LIMIT $2 OFFSET $3
@@ -491,6 +545,11 @@ func (q *Queries) ListResourcesByTenant(ctx context.Context, arg ListResourcesBy
 			&i.ProviderID,
 			&i.AgentID,
 			&i.OwnerResourceID,
+			&i.MrnService,
+			&i.MrnTenant,
+			&i.MrnProject,
+			&i.MrnResourceType,
+			&i.MrnResourcePath,
 			&i.Kind,
 			&i.Name,
 			&i.State,
@@ -535,16 +594,23 @@ func (q *Queries) MarkResourceDeleting(ctx context.Context, resourceUuid uuid.UU
 
 const updateResourceSpec = `-- name: UpdateResourceSpec :one
 UPDATE resources
-SET spec = $2, metadata = $3, generation = generation + 1, state = 'pending',
+SET spec = $2, metadata = $3,
+    mrn_service = $4, mrn_tenant = $5, mrn_project = $6, mrn_resource_type = $7, mrn_resource_path = $8,
+    generation = generation + 1, state = 'pending',
     attempts = 0, next_attempt_at = NULL, updated_at = now()
 WHERE resource_uuid = $1 AND deleted_at IS NULL
-RETURNING resource_id, resource_uuid, tenant_id, project_id, provider_id, agent_id, owner_resource_id, kind, name, state, spec, status, generation, observed_generation, leased_until, attempts, next_attempt_at, metadata, created_by, updated_by, created_at, updated_at, deleted_at
+RETURNING resource_id, resource_uuid, tenant_id, project_id, provider_id, agent_id, owner_resource_id, mrn_service, mrn_tenant, mrn_project, mrn_resource_type, mrn_resource_path, kind, name, state, spec, status, generation, observed_generation, leased_until, attempts, next_attempt_at, metadata, created_by, updated_by, created_at, updated_at, deleted_at
 `
 
 type UpdateResourceSpecParams struct {
-	ResourceUuid uuid.UUID `json:"resource_uuid"`
-	Spec         []byte    `json:"spec"`
-	Metadata     []byte    `json:"metadata"`
+	ResourceUuid    uuid.UUID `json:"resource_uuid"`
+	Spec            []byte    `json:"spec"`
+	Metadata        []byte    `json:"metadata"`
+	MrnService      string    `json:"mrn_service"`
+	MrnTenant       string    `json:"mrn_tenant"`
+	MrnProject      string    `json:"mrn_project"`
+	MrnResourceType string    `json:"mrn_resource_type"`
+	MrnResourcePath string    `json:"mrn_resource_path"`
 }
 
 // A spec change bumps generation and re-arms the reconciler (state -> pending).
@@ -553,7 +619,16 @@ type UpdateResourceSpecParams struct {
 // desired state actually changes — never by the failing spec being retried
 // forever on its own.
 func (q *Queries) UpdateResourceSpec(ctx context.Context, arg UpdateResourceSpecParams) (Resource, error) {
-	row := q.db.QueryRow(ctx, updateResourceSpec, arg.ResourceUuid, arg.Spec, arg.Metadata)
+	row := q.db.QueryRow(ctx, updateResourceSpec,
+		arg.ResourceUuid,
+		arg.Spec,
+		arg.Metadata,
+		arg.MrnService,
+		arg.MrnTenant,
+		arg.MrnProject,
+		arg.MrnResourceType,
+		arg.MrnResourcePath,
+	)
 	var i Resource
 	err := row.Scan(
 		&i.ResourceID,
@@ -563,6 +638,11 @@ func (q *Queries) UpdateResourceSpec(ctx context.Context, arg UpdateResourceSpec
 		&i.ProviderID,
 		&i.AgentID,
 		&i.OwnerResourceID,
+		&i.MrnService,
+		&i.MrnTenant,
+		&i.MrnProject,
+		&i.MrnResourceType,
+		&i.MrnResourcePath,
 		&i.Kind,
 		&i.Name,
 		&i.State,
@@ -587,7 +667,7 @@ const updateResourceStatus = `-- name: UpdateResourceStatus :one
 UPDATE resources
 SET status = $2, state = $3, observed_generation = $4, updated_at = now()
 WHERE resource_uuid = $1 AND deleted_at IS NULL
-RETURNING resource_id, resource_uuid, tenant_id, project_id, provider_id, agent_id, owner_resource_id, kind, name, state, spec, status, generation, observed_generation, leased_until, attempts, next_attempt_at, metadata, created_by, updated_by, created_at, updated_at, deleted_at
+RETURNING resource_id, resource_uuid, tenant_id, project_id, provider_id, agent_id, owner_resource_id, mrn_service, mrn_tenant, mrn_project, mrn_resource_type, mrn_resource_path, kind, name, state, spec, status, generation, observed_generation, leased_until, attempts, next_attempt_at, metadata, created_by, updated_by, created_at, updated_at, deleted_at
 `
 
 type UpdateResourceStatusParams struct {
@@ -614,6 +694,11 @@ func (q *Queries) UpdateResourceStatus(ctx context.Context, arg UpdateResourceSt
 		&i.ProviderID,
 		&i.AgentID,
 		&i.OwnerResourceID,
+		&i.MrnService,
+		&i.MrnTenant,
+		&i.MrnProject,
+		&i.MrnResourceType,
+		&i.MrnResourcePath,
 		&i.Kind,
 		&i.Name,
 		&i.State,

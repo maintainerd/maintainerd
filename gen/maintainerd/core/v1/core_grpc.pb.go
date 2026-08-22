@@ -23,6 +23,7 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
+	AgentGatewayService_Enroll_FullMethodName       = "/maintainerd.core.v1.AgentGatewayService/Enroll"
 	AgentGatewayService_Register_FullMethodName     = "/maintainerd.core.v1.AgentGatewayService/Register"
 	AgentGatewayService_Heartbeat_FullMethodName    = "/maintainerd.core.v1.AgentGatewayService/Heartbeat"
 	AgentGatewayService_PullWork_FullMethodName     = "/maintainerd.core.v1.AgentGatewayService/PullWork"
@@ -35,6 +36,8 @@ const (
 //
 // AgentGateway is Core's agent-facing control plane.
 type AgentGatewayServiceClient interface {
+	// Enroll exchanges a one-time join token + CSR for the agent's mTLS client certificate.
+	Enroll(ctx context.Context, in *EnrollRequest, opts ...grpc.CallOption) (*EnrollResponse, error)
 	// Register announces an agent (marks it online, records version/capabilities).
 	Register(ctx context.Context, in *RegisterRequest, opts ...grpc.CallOption) (*RegisterResponse, error)
 	// Heartbeat keeps an agent marked online and stamps last-seen.
@@ -51,6 +54,16 @@ type agentGatewayServiceClient struct {
 
 func NewAgentGatewayServiceClient(cc grpc.ClientConnInterface) AgentGatewayServiceClient {
 	return &agentGatewayServiceClient{cc}
+}
+
+func (c *agentGatewayServiceClient) Enroll(ctx context.Context, in *EnrollRequest, opts ...grpc.CallOption) (*EnrollResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(EnrollResponse)
+	err := c.cc.Invoke(ctx, AgentGatewayService_Enroll_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 func (c *agentGatewayServiceClient) Register(ctx context.Context, in *RegisterRequest, opts ...grpc.CallOption) (*RegisterResponse, error) {
@@ -99,6 +112,8 @@ func (c *agentGatewayServiceClient) ReportStatus(ctx context.Context, in *Report
 //
 // AgentGateway is Core's agent-facing control plane.
 type AgentGatewayServiceServer interface {
+	// Enroll exchanges a one-time join token + CSR for the agent's mTLS client certificate.
+	Enroll(context.Context, *EnrollRequest) (*EnrollResponse, error)
 	// Register announces an agent (marks it online, records version/capabilities).
 	Register(context.Context, *RegisterRequest) (*RegisterResponse, error)
 	// Heartbeat keeps an agent marked online and stamps last-seen.
@@ -117,6 +132,9 @@ type AgentGatewayServiceServer interface {
 // pointer dereference when methods are called.
 type UnimplementedAgentGatewayServiceServer struct{}
 
+func (UnimplementedAgentGatewayServiceServer) Enroll(context.Context, *EnrollRequest) (*EnrollResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method Enroll not implemented")
+}
 func (UnimplementedAgentGatewayServiceServer) Register(context.Context, *RegisterRequest) (*RegisterResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method Register not implemented")
 }
@@ -148,6 +166,24 @@ func RegisterAgentGatewayServiceServer(s grpc.ServiceRegistrar, srv AgentGateway
 		t.testEmbeddedByValue()
 	}
 	s.RegisterService(&AgentGatewayService_ServiceDesc, srv)
+}
+
+func _AgentGatewayService_Enroll_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(EnrollRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(AgentGatewayServiceServer).Enroll(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: AgentGatewayService_Enroll_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(AgentGatewayServiceServer).Enroll(ctx, req.(*EnrollRequest))
+	}
+	return interceptor(ctx, in, info, handler)
 }
 
 func _AgentGatewayService_Register_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
@@ -229,6 +265,10 @@ var AgentGatewayService_ServiceDesc = grpc.ServiceDesc{
 	ServiceName: "maintainerd.core.v1.AgentGatewayService",
 	HandlerType: (*AgentGatewayServiceServer)(nil),
 	Methods: []grpc.MethodDesc{
+		{
+			MethodName: "Enroll",
+			Handler:    _AgentGatewayService_Enroll_Handler,
+		},
 		{
 			MethodName: "Register",
 			Handler:    _AgentGatewayService_Register_Handler,

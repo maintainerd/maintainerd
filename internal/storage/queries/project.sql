@@ -9,6 +9,9 @@ SELECT * FROM projects WHERE project_id = $1 AND deleted_at IS NULL;
 -- name: GetProjectByUUID :one
 SELECT * FROM projects WHERE project_uuid = $1 AND deleted_at IS NULL;
 
+-- name: GetProjectByTenantAndName :one
+SELECT * FROM projects WHERE tenant_id = $1 AND name = $2 AND deleted_at IS NULL;
+
 -- name: ListProjectsByTenant :many
 SELECT * FROM projects
 WHERE tenant_id = $1 AND deleted_at IS NULL

@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
@@ -24,6 +25,7 @@ import (
 	"google.golang.org/grpc/metadata"
 
 	authv1 "github.com/maintainerd/core/gen/maintainerd/auth/v1"
+	"github.com/maintainerd/core/internal/resource"
 	"github.com/maintainerd/core/internal/service"
 	"github.com/maintainerd/core/internal/storage"
 	"github.com/maintainerd/core/internal/tenant"
@@ -336,7 +338,14 @@ func (o *Orchestrator) RunWith(ctx context.Context, in RunInput) (*Result, error
 		res.ConsoleOAuthClientID = con.GetOauthClientId()
 	}
 
-	// 7. IAM super-admin — the FINAL gated call: it activates the system tenant
+	// 7. Reconcile maintainerd's service catalog into Auth while setup is still
+	// open. The catalog handles non-core services (secret/runtime/agent) through
+	// the same idempotent provisioning RPCs instead of one-off code.
+	if err := o.reconcileSteward(actx, cli); err != nil {
+		return nil, fmt.Errorf("auth steward reconcile: %w", err)
+	}
+
+	// 8. IAM super-admin — the FINAL gated call: it activates the system tenant
 	// and locks setup. Not idempotent, so skip if a prior run already created it.
 	if !status.GetIsAdminSetup() {
 		a, err := cli.CreateAdmin(actx, &authv1.CreateAdminRequest{
@@ -353,7 +362,7 @@ func (o *Orchestrator) RunWith(ctx context.Context, in RunInput) (*Result, error
 		slog.Info("core setup: auth admin already exists — skipping CreateAdmin")
 	}
 
-	// 8. Lock setup (idempotent — CreateAdmin already activated the tenant).
+	// 9. Lock setup (idempotent — CreateAdmin already activated the tenant).
 	if _, err := cli.CompleteSetup(actx, &authv1.CompleteSetupRequest{}); err != nil {
 		return nil, fmt.Errorf("auth CompleteSetup: %w", err)
 	}
@@ -454,6 +463,78 @@ func (o *Orchestrator) mirror(ctx context.Context, res *Result, tenantName, tena
 			Endpoint:   s.endpoint,
 		}); err != nil {
 			slog.Warn("core setup: register system service", "name", s.name, "err", err)
+		}
+	}
+	if err := o.publishSystemResources(ctx, coreTenant); err != nil {
+		slog.Warn("core setup: publish system resources failed", "err", err)
+	}
+	return nil
+}
+
+func (o *Orchestrator) publishSystemResources(ctx context.Context, tenantUUID uuid.UUID) error {
+	systemImages := []struct {
+		name  string
+		image string
+	}{
+		{"auth", o.cfg.SystemAuthImage},
+		{"secret", o.cfg.SystemSecretImage},
+	}
+	hasAny := false
+	for _, item := range systemImages {
+		if item.image != "" {
+			hasAny = true
+			break
+		}
+	}
+	if !hasAny {
+		return nil
+	}
+	tenantRow, err := o.q.GetTenantByUUID(ctx, tenantUUID)
+	if err != nil {
+		return err
+	}
+	projectRow, err := o.q.GetProjectByTenantAndName(ctx, storage.GetProjectByTenantAndNameParams{
+		TenantID: tenantRow.TenantID,
+		Name:     "system",
+	})
+	if errors.Is(err, pgx.ErrNoRows) {
+		projectRow, err = o.q.CreateProject(ctx, storage.CreateProjectParams{
+			TenantID:    tenantRow.TenantID,
+			Name:        "system",
+			DisplayName: "System",
+			Description: "Maintainerd system-tier workloads",
+			Status:      "active",
+			Metadata:    []byte(`{"tier":"system"}`),
+		})
+	}
+	if err != nil {
+		return err
+	}
+	rsvc := resource.NewService(o.q)
+	for _, item := range systemImages {
+		if item.image == "" {
+			continue
+		}
+		if _, err := rsvc.Create(ctx, resource.CreateInput{
+			ProjectUUID: projectRow.ProjectUuid,
+			Kind:        "Workload",
+			Name:        "system-" + item.name,
+			Spec: map[string]any{
+				"image":       item.image,
+				"name":        "maintainerd-" + item.name,
+				"pull_policy": "if-not-present",
+				"restart_policy": map[string]any{
+					"name": "unless-stopped",
+				},
+			},
+			Metadata: map[string]any{
+				"tier":              "system",
+				"mrn_service":       "core",
+				"mrn_resource_type": "service",
+				"mrn_resource_path": item.name,
+			},
+		}); err != nil {
+			slog.Warn("core setup: publish system resource", "name", item.name, "err", err)
 		}
 	}
 	return nil

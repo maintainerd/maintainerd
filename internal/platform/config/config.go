@@ -83,6 +83,13 @@ var (
 	// until its spec changes.
 	GatewayAttemptBudget int
 
+	// Agent enrollment CA. AgentGateway.Enroll signs the agent's CSR with this
+	// CA after validating the one-time join token; non-enrollment RPCs can then
+	// require a client cert chained to GRPC_CLIENT_CA_FILE.
+	AgentCACertFile string
+	AgentCAKeyFile  string
+	AgentCertTTL    time.Duration
+
 	// Application Encryption Key (AES-256)
 	AppEncryptionKey []byte
 
@@ -269,6 +276,14 @@ func Init() error {
 	if GatewayAttemptBudget < 1 {
 		return fmt.Errorf("ATTEMPT_BUDGET must be at least 1 (got %d)", GatewayAttemptBudget)
 	}
+	AgentCACertFile = GetEnvOrDefault("AGENT_CA_CERT_FILE", "")
+	AgentCAKeyFile = GetEnvOrDefault("AGENT_CA_KEY_FILE", "")
+	if AgentCertTTL, err = time.ParseDuration(GetEnvOrDefault("AGENT_CERT_TTL", "24h")); err != nil {
+		return fmt.Errorf("AGENT_CERT_TTL is not a valid duration: %w", err)
+	}
+	if AgentCertTTL <= 0 {
+		return fmt.Errorf("AGENT_CERT_TTL must be positive (got %s)", AgentCertTTL)
+	}
 
 	// Frontend Config (optional — auth-era; unused by the core control plane).
 	AppFrontendIdentityHostname = GetEnvOrDefault("APP_FRONTEND_IDENTITY_HOSTNAME", "")
@@ -382,8 +397,11 @@ type Config struct {
 	DBConnMaxLifetimeSec int
 	DBStatementTimeoutMs int
 
-	CookieSecure   bool
-	CookieSameSite string
+	CookieSecure    bool
+	CookieSameSite  string
+	AgentCACertFile string
+	AgentCAKeyFile  string
+	AgentCertTTL    time.Duration
 }
 
 func GetConfig() Config {
@@ -423,6 +441,9 @@ func GetConfig() Config {
 		DBStatementTimeoutMs:        DBStatementTimeoutMs,
 		CookieSecure:                CookieSecure,
 		CookieSameSite:              CookieSameSite,
+		AgentCACertFile:             AgentCACertFile,
+		AgentCAKeyFile:              AgentCAKeyFile,
+		AgentCertTTL:                AgentCertTTL,
 	}
 }
 

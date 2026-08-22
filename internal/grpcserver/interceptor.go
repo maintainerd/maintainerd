@@ -43,6 +43,7 @@ const gatewayPermission = "core:agent:gateway"
 // without deciding its permission fails closed instead of shipping an
 // unguarded endpoint.
 var methodPermissions = map[string]string{
+	corev1.AgentGatewayService_Enroll_FullMethodName:       "",
 	corev1.AgentGatewayService_Register_FullMethodName:     gatewayPermission,
 	corev1.AgentGatewayService_Heartbeat_FullMethodName:    gatewayPermission,
 	corev1.AgentGatewayService_PullWork_FullMethodName:     gatewayPermission,
@@ -80,6 +81,9 @@ func ClaimsFromContext(ctx context.Context) (*Claims, bool) {
 func AuthUnaryInterceptor(verify VerifyFunc) grpc.UnaryServerInterceptor {
 	return func(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
 		if strings.HasPrefix(info.FullMethod, healthServicePrefix) {
+			return handler(ctx, req)
+		}
+		if info.FullMethod == corev1.AgentGatewayService_Enroll_FullMethodName {
 			return handler(ctx, req)
 		}
 		token := bearerFromMD(ctx)

@@ -4,6 +4,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/maintainerd/core/internal/agent"
+	"github.com/maintainerd/core/internal/deploytemplate"
 	"github.com/maintainerd/core/internal/project"
 	"github.com/maintainerd/core/internal/provider"
 	"github.com/maintainerd/core/internal/resource"
@@ -27,6 +28,7 @@ type App struct {
 
 	AgentSvc    *agent.Service
 	ResourceSvc *resource.Service
+	TemplateSvc *deploytemplate.Service
 	SetupOrch   *setup.Orchestrator
 }
 
@@ -40,6 +42,7 @@ func New(pool *pgxpool.Pool, setupGate setup.Gate) *App {
 
 	agentSvc := agent.NewService(q)
 	resourceSvc := resource.NewService(q)
+	templateSvc := deploytemplate.NewService(q)
 	setupOrch := setup.NewOrchestrator(q, setup.LoadConfig())
 
 	return &App{
@@ -53,6 +56,7 @@ func New(pool *pgxpool.Pool, setupGate setup.Gate) *App {
 
 		AgentSvc:    agentSvc,
 		ResourceSvc: resourceSvc,
+		TemplateSvc: templateSvc,
 		SetupOrch:   setupOrch,
 	}
 }

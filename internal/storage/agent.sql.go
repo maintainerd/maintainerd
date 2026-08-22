@@ -15,7 +15,7 @@ const agentHeartbeat = `-- name: AgentHeartbeat :one
 UPDATE agents
 SET last_seen_at = now(), status = 'online', updated_at = now()
 WHERE agent_uuid = $1 AND deleted_at IS NULL
-RETURNING agent_id, agent_uuid, tenant_id, name, status, endpoint, version, capabilities, bound_subject, last_seen_at, metadata, created_by, updated_by, created_at, updated_at, deleted_at
+RETURNING agent_id, agent_uuid, tenant_id, name, status, endpoint, version, capabilities, join_token_hash, join_token_used_at, client_cert_pem, bound_subject, last_seen_at, metadata, created_by, updated_by, created_at, updated_at, deleted_at
 `
 
 func (q *Queries) AgentHeartbeat(ctx context.Context, agentUuid uuid.UUID) (Agent, error) {
@@ -30,6 +30,9 @@ func (q *Queries) AgentHeartbeat(ctx context.Context, agentUuid uuid.UUID) (Agen
 		&i.Endpoint,
 		&i.Version,
 		&i.Capabilities,
+		&i.JoinTokenHash,
+		&i.JoinTokenUsedAt,
+		&i.ClientCertPem,
 		&i.BoundSubject,
 		&i.LastSeenAt,
 		&i.Metadata,
@@ -47,7 +50,7 @@ UPDATE agents
 SET bound_subject = $2, updated_at = now()
 WHERE agent_uuid = $1 AND deleted_at IS NULL
   AND (bound_subject = '' OR bound_subject = $2)
-RETURNING agent_id, agent_uuid, tenant_id, name, status, endpoint, version, capabilities, bound_subject, last_seen_at, metadata, created_by, updated_by, created_at, updated_at, deleted_at
+RETURNING agent_id, agent_uuid, tenant_id, name, status, endpoint, version, capabilities, join_token_hash, join_token_used_at, client_cert_pem, bound_subject, last_seen_at, metadata, created_by, updated_by, created_at, updated_at, deleted_at
 `
 
 type BindAgentSubjectParams struct {
@@ -72,6 +75,9 @@ func (q *Queries) BindAgentSubject(ctx context.Context, arg BindAgentSubjectPara
 		&i.Endpoint,
 		&i.Version,
 		&i.Capabilities,
+		&i.JoinTokenHash,
+		&i.JoinTokenUsedAt,
+		&i.ClientCertPem,
 		&i.BoundSubject,
 		&i.LastSeenAt,
 		&i.Metadata,
@@ -96,19 +102,20 @@ func (q *Queries) CountAgentsByTenant(ctx context.Context, tenantID int64) (int6
 }
 
 const createAgent = `-- name: CreateAgent :one
-INSERT INTO agents (tenant_id, name, status, endpoint, version, capabilities, metadata)
-VALUES ($1, $2, $3, $4, $5, $6, $7)
-RETURNING agent_id, agent_uuid, tenant_id, name, status, endpoint, version, capabilities, bound_subject, last_seen_at, metadata, created_by, updated_by, created_at, updated_at, deleted_at
+INSERT INTO agents (tenant_id, name, status, endpoint, version, capabilities, metadata, join_token_hash)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+RETURNING agent_id, agent_uuid, tenant_id, name, status, endpoint, version, capabilities, join_token_hash, join_token_used_at, client_cert_pem, bound_subject, last_seen_at, metadata, created_by, updated_by, created_at, updated_at, deleted_at
 `
 
 type CreateAgentParams struct {
-	TenantID     int64  `json:"tenant_id"`
-	Name         string `json:"name"`
-	Status       string `json:"status"`
-	Endpoint     string `json:"endpoint"`
-	Version      string `json:"version"`
-	Capabilities []byte `json:"capabilities"`
-	Metadata     []byte `json:"metadata"`
+	TenantID      int64  `json:"tenant_id"`
+	Name          string `json:"name"`
+	Status        string `json:"status"`
+	Endpoint      string `json:"endpoint"`
+	Version       string `json:"version"`
+	Capabilities  []byte `json:"capabilities"`
+	Metadata      []byte `json:"metadata"`
+	JoinTokenHash string `json:"join_token_hash"`
 }
 
 func (q *Queries) CreateAgent(ctx context.Context, arg CreateAgentParams) (Agent, error) {
@@ -120,6 +127,7 @@ func (q *Queries) CreateAgent(ctx context.Context, arg CreateAgentParams) (Agent
 		arg.Version,
 		arg.Capabilities,
 		arg.Metadata,
+		arg.JoinTokenHash,
 	)
 	var i Agent
 	err := row.Scan(
@@ -131,6 +139,9 @@ func (q *Queries) CreateAgent(ctx context.Context, arg CreateAgentParams) (Agent
 		&i.Endpoint,
 		&i.Version,
 		&i.Capabilities,
+		&i.JoinTokenHash,
+		&i.JoinTokenUsedAt,
+		&i.ClientCertPem,
 		&i.BoundSubject,
 		&i.LastSeenAt,
 		&i.Metadata,
@@ -144,7 +155,7 @@ func (q *Queries) CreateAgent(ctx context.Context, arg CreateAgentParams) (Agent
 }
 
 const getAgentByID = `-- name: GetAgentByID :one
-SELECT agent_id, agent_uuid, tenant_id, name, status, endpoint, version, capabilities, bound_subject, last_seen_at, metadata, created_by, updated_by, created_at, updated_at, deleted_at FROM agents WHERE agent_id = $1 AND deleted_at IS NULL
+SELECT agent_id, agent_uuid, tenant_id, name, status, endpoint, version, capabilities, join_token_hash, join_token_used_at, client_cert_pem, bound_subject, last_seen_at, metadata, created_by, updated_by, created_at, updated_at, deleted_at FROM agents WHERE agent_id = $1 AND deleted_at IS NULL
 `
 
 func (q *Queries) GetAgentByID(ctx context.Context, agentID int64) (Agent, error) {
@@ -159,6 +170,9 @@ func (q *Queries) GetAgentByID(ctx context.Context, agentID int64) (Agent, error
 		&i.Endpoint,
 		&i.Version,
 		&i.Capabilities,
+		&i.JoinTokenHash,
+		&i.JoinTokenUsedAt,
+		&i.ClientCertPem,
 		&i.BoundSubject,
 		&i.LastSeenAt,
 		&i.Metadata,
@@ -172,7 +186,7 @@ func (q *Queries) GetAgentByID(ctx context.Context, agentID int64) (Agent, error
 }
 
 const getAgentByUUID = `-- name: GetAgentByUUID :one
-SELECT agent_id, agent_uuid, tenant_id, name, status, endpoint, version, capabilities, bound_subject, last_seen_at, metadata, created_by, updated_by, created_at, updated_at, deleted_at FROM agents WHERE agent_uuid = $1 AND deleted_at IS NULL
+SELECT agent_id, agent_uuid, tenant_id, name, status, endpoint, version, capabilities, join_token_hash, join_token_used_at, client_cert_pem, bound_subject, last_seen_at, metadata, created_by, updated_by, created_at, updated_at, deleted_at FROM agents WHERE agent_uuid = $1 AND deleted_at IS NULL
 `
 
 func (q *Queries) GetAgentByUUID(ctx context.Context, agentUuid uuid.UUID) (Agent, error) {
@@ -187,6 +201,9 @@ func (q *Queries) GetAgentByUUID(ctx context.Context, agentUuid uuid.UUID) (Agen
 		&i.Endpoint,
 		&i.Version,
 		&i.Capabilities,
+		&i.JoinTokenHash,
+		&i.JoinTokenUsedAt,
+		&i.ClientCertPem,
 		&i.BoundSubject,
 		&i.LastSeenAt,
 		&i.Metadata,
@@ -200,7 +217,7 @@ func (q *Queries) GetAgentByUUID(ctx context.Context, agentUuid uuid.UUID) (Agen
 }
 
 const listAgentsByTenant = `-- name: ListAgentsByTenant :many
-SELECT agent_id, agent_uuid, tenant_id, name, status, endpoint, version, capabilities, bound_subject, last_seen_at, metadata, created_by, updated_by, created_at, updated_at, deleted_at FROM agents
+SELECT agent_id, agent_uuid, tenant_id, name, status, endpoint, version, capabilities, join_token_hash, join_token_used_at, client_cert_pem, bound_subject, last_seen_at, metadata, created_by, updated_by, created_at, updated_at, deleted_at FROM agents
 WHERE tenant_id = $1 AND deleted_at IS NULL
 ORDER BY created_at DESC
 LIMIT $2 OFFSET $3
@@ -230,6 +247,9 @@ func (q *Queries) ListAgentsByTenant(ctx context.Context, arg ListAgentsByTenant
 			&i.Endpoint,
 			&i.Version,
 			&i.Capabilities,
+			&i.JoinTokenHash,
+			&i.JoinTokenUsedAt,
+			&i.ClientCertPem,
 			&i.BoundSubject,
 			&i.LastSeenAt,
 			&i.Metadata,
@@ -249,6 +269,45 @@ func (q *Queries) ListAgentsByTenant(ctx context.Context, arg ListAgentsByTenant
 	return items, nil
 }
 
+const markAgentEnrolled = `-- name: MarkAgentEnrolled :one
+UPDATE agents
+SET join_token_used_at = now(), client_cert_pem = $2, updated_at = now()
+WHERE agent_uuid = $1 AND deleted_at IS NULL AND join_token_used_at IS NULL
+RETURNING agent_id, agent_uuid, tenant_id, name, status, endpoint, version, capabilities, join_token_hash, join_token_used_at, client_cert_pem, bound_subject, last_seen_at, metadata, created_by, updated_by, created_at, updated_at, deleted_at
+`
+
+type MarkAgentEnrolledParams struct {
+	AgentUuid     uuid.UUID `json:"agent_uuid"`
+	ClientCertPem string    `json:"client_cert_pem"`
+}
+
+func (q *Queries) MarkAgentEnrolled(ctx context.Context, arg MarkAgentEnrolledParams) (Agent, error) {
+	row := q.db.QueryRow(ctx, markAgentEnrolled, arg.AgentUuid, arg.ClientCertPem)
+	var i Agent
+	err := row.Scan(
+		&i.AgentID,
+		&i.AgentUuid,
+		&i.TenantID,
+		&i.Name,
+		&i.Status,
+		&i.Endpoint,
+		&i.Version,
+		&i.Capabilities,
+		&i.JoinTokenHash,
+		&i.JoinTokenUsedAt,
+		&i.ClientCertPem,
+		&i.BoundSubject,
+		&i.LastSeenAt,
+		&i.Metadata,
+		&i.CreatedBy,
+		&i.UpdatedBy,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.DeletedAt,
+	)
+	return i, err
+}
+
 const softDeleteAgent = `-- name: SoftDeleteAgent :exec
 UPDATE agents SET deleted_at = now(), updated_at = now()
 WHERE agent_uuid = $1 AND deleted_at IS NULL
@@ -263,7 +322,7 @@ const updateAgentStatus = `-- name: UpdateAgentStatus :one
 UPDATE agents
 SET status = $2, endpoint = $3, version = $4, capabilities = $5, updated_at = now()
 WHERE agent_uuid = $1 AND deleted_at IS NULL
-RETURNING agent_id, agent_uuid, tenant_id, name, status, endpoint, version, capabilities, bound_subject, last_seen_at, metadata, created_by, updated_by, created_at, updated_at, deleted_at
+RETURNING agent_id, agent_uuid, tenant_id, name, status, endpoint, version, capabilities, join_token_hash, join_token_used_at, client_cert_pem, bound_subject, last_seen_at, metadata, created_by, updated_by, created_at, updated_at, deleted_at
 `
 
 type UpdateAgentStatusParams struct {
@@ -292,6 +351,9 @@ func (q *Queries) UpdateAgentStatus(ctx context.Context, arg UpdateAgentStatusPa
 		&i.Endpoint,
 		&i.Version,
 		&i.Capabilities,
+		&i.JoinTokenHash,
+		&i.JoinTokenUsedAt,
+		&i.ClientCertPem,
 		&i.BoundSubject,
 		&i.LastSeenAt,
 		&i.Metadata,

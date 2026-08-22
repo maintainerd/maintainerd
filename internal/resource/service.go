@@ -4,11 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
+	kitruntime "github.com/maintainerd/kit/runtime"
 
 	"github.com/maintainerd/core/internal/platform/apperror"
 	"github.com/maintainerd/core/internal/platform/jsonutil"
@@ -21,6 +24,12 @@ import (
 type Resource struct {
 	UUID               uuid.UUID      `json:"resource_uuid"`
 	ProjectUUID        uuid.UUID      `json:"project_uuid"`
+	MRN                string         `json:"mrn"`
+	MRNService         string         `json:"mrn_service"`
+	MRNTenant          string         `json:"mrn_tenant"`
+	MRNProject         string         `json:"mrn_project"`
+	MRNResourceType    string         `json:"mrn_resource_type"`
+	MRNResourcePath    string         `json:"mrn_resource_path"`
 	Kind               string         `json:"kind"`
 	Name               string         `json:"name"`
 	State              string         `json:"state"`
@@ -69,6 +78,10 @@ func (s *Service) Create(ctx context.Context, in CreateInput) (*Resource, error)
 	if err != nil {
 		return nil, err
 	}
+	tenantRow, err := s.q.GetTenantByID(ctx, proj.TenantID)
+	if err != nil {
+		return nil, err
+	}
 	providerID := pgtype.Int8{}
 	if in.ProviderUUID != nil {
 		prov, err := s.q.GetProviderByUUID(ctx, *in.ProviderUUID)
@@ -84,9 +97,16 @@ func (s *Service) Create(ctx context.Context, in CreateInput) (*Resource, error)
 	if err != nil {
 		return nil, apperror.NewValidation("invalid spec")
 	}
+	if err := validateSpec(in.Kind, spec); err != nil {
+		return nil, apperror.NewValidation(err.Error())
+	}
 	meta, err := marshalMap(in.Metadata)
 	if err != nil {
 		return nil, apperror.NewValidation("invalid metadata")
+	}
+	mrn, err := buildMRN(tenantRow.Name, proj.Name, in.Kind, in.Name, in.Metadata)
+	if err != nil {
+		return nil, apperror.NewValidation(err.Error())
 	}
 	row, err := s.q.CreateResource(ctx, storage.CreateResourceParams{
 		TenantID:        proj.TenantID,
@@ -94,6 +114,11 @@ func (s *Service) Create(ctx context.Context, in CreateInput) (*Resource, error)
 		ProviderID:      providerID,
 		AgentID:         pgtype.Int8{},
 		OwnerResourceID: pgtype.Int8{},
+		MrnService:      mrn.Service,
+		MrnTenant:       mrn.Tenant,
+		MrnProject:      mrn.Project,
+		MrnResourceType: mrn.ResourceType,
+		MrnResourcePath: mrn.ResourcePath,
 		Kind:            in.Kind,
 		Name:            in.Name,
 		Spec:            spec,
@@ -165,17 +190,39 @@ func (s *Service) UpdateSpec(ctx context.Context, id uuid.UUID, in UpdateSpecInp
 		if spec, err = marshalMap(in.Spec); err != nil {
 			return nil, apperror.NewValidation("invalid spec")
 		}
+		if err := validateSpec(current.Kind, spec); err != nil {
+			return nil, apperror.NewValidation(err.Error())
+		}
 	}
 	meta := current.Metadata
+	metaMap := jsonutil.JSONToMap(current.Metadata)
 	if in.Metadata != nil {
 		if meta, err = marshalMap(in.Metadata); err != nil {
 			return nil, apperror.NewValidation("invalid metadata")
 		}
+		metaMap = in.Metadata
+	}
+	projectRow, err := s.q.GetProjectByID(ctx, current.ProjectID)
+	if err != nil {
+		return nil, err
+	}
+	tenantRow, err := s.q.GetTenantByID(ctx, current.TenantID)
+	if err != nil {
+		return nil, err
+	}
+	mrn, err := buildMRN(tenantRow.Name, projectRow.Name, current.Kind, current.Name, metaMap)
+	if err != nil {
+		return nil, apperror.NewValidation(err.Error())
 	}
 	row, err := s.q.UpdateResourceSpec(ctx, storage.UpdateResourceSpecParams{
-		ResourceUuid: id,
-		Spec:         spec,
-		Metadata:     meta,
+		ResourceUuid:    id,
+		Spec:            spec,
+		Metadata:        meta,
+		MrnService:      mrn.Service,
+		MrnTenant:       mrn.Tenant,
+		MrnProject:      mrn.Project,
+		MrnResourceType: mrn.ResourceType,
+		MrnResourcePath: mrn.ResourcePath,
 	})
 	if err != nil {
 		return nil, err
@@ -465,6 +512,12 @@ func toResource(m storage.Resource, projectUUID uuid.UUID) Resource {
 	return Resource{
 		UUID:               m.ResourceUuid,
 		ProjectUUID:        projectUUID,
+		MRN:                renderMRN(m.MrnService, m.MrnTenant, m.MrnProject, m.MrnResourceType, m.MrnResourcePath),
+		MRNService:         m.MrnService,
+		MRNTenant:          m.MrnTenant,
+		MRNProject:         m.MrnProject,
+		MRNResourceType:    m.MrnResourceType,
+		MRNResourcePath:    m.MrnResourcePath,
 		Kind:               m.Kind,
 		Name:               m.Name,
 		State:              m.State,
@@ -483,6 +536,114 @@ func marshalMap(m map[string]any) ([]byte, error) {
 		return []byte("{}"), nil
 	}
 	return json.Marshal(m)
+}
+
+type mrnParts struct {
+	Service      string
+	Tenant       string
+	Project      string
+	ResourceType string
+	ResourcePath string
+}
+
+func buildMRN(tenantName, projectName, kind, name string, metadata map[string]any) (mrnParts, error) {
+	parts := mrnParts{
+		Service:      firstMetaString(metadata, "mrn_service", "service"),
+		Tenant:       tenantName,
+		Project:      projectName,
+		ResourceType: firstMetaString(metadata, "mrn_resource_type", "resource_type"),
+		ResourcePath: firstMetaString(metadata, "mrn_resource_path", "resource_path"),
+	}
+	if parts.Service == "" {
+		parts.Service = "core"
+	}
+	if parts.ResourceType == "" {
+		parts.ResourceType = strings.ToLower(strings.TrimSpace(kind))
+	}
+	if parts.ResourcePath == "" {
+		parts.ResourcePath = strings.TrimSpace(name)
+	}
+	if err := validateMRNSegment("service", parts.Service); err != nil {
+		return mrnParts{}, err
+	}
+	if err := validateMRNSegment("tenant", parts.Tenant); err != nil {
+		return mrnParts{}, err
+	}
+	if err := validateMRNSegment("project", parts.Project); err != nil {
+		return mrnParts{}, err
+	}
+	if err := validateMRNSegment("resource_type", parts.ResourceType); err != nil {
+		return mrnParts{}, err
+	}
+	if err := validateMRNPath(parts.ResourcePath); err != nil {
+		return mrnParts{}, err
+	}
+	return parts, nil
+}
+
+func firstMetaString(metadata map[string]any, keys ...string) string {
+	for _, key := range keys {
+		if v, ok := metadata[key].(string); ok {
+			return strings.TrimSpace(v)
+		}
+	}
+	return ""
+}
+
+func validateMRNSegment(name, value string) error {
+	if strings.TrimSpace(value) == "" {
+		return fmt.Errorf("mrn_%s is required", name)
+	}
+	if strings.ContainsAny(value, ":/*") || strings.Contains(value, "..") {
+		return fmt.Errorf("mrn_%s contains invalid characters", name)
+	}
+	return nil
+}
+
+func validateMRNPath(path string) error {
+	if strings.TrimSpace(path) == "" {
+		return fmt.Errorf("mrn_resource_path is required")
+	}
+	if strings.HasPrefix(path, "/") || strings.HasSuffix(path, "/") || strings.Contains(path, ":") ||
+		strings.Contains(path, "*") || strings.Contains(path, "..") {
+		return fmt.Errorf("mrn_resource_path contains invalid characters")
+	}
+	return nil
+}
+
+func renderMRN(service, tenant, project, resourceType, resourcePath string) string {
+	if service == "" && tenant == "" && project == "" && resourceType == "" && resourcePath == "" {
+		return ""
+	}
+	return fmt.Sprintf("mrn:%s:%s:%s:%s/%s", service, tenant, project, resourceType, resourcePath)
+}
+
+func validateSpec(kind string, specJSON []byte) error {
+	switch strings.ToLower(strings.TrimSpace(kind)) {
+	case "container", "workload":
+		var envelope struct {
+			Workload json.RawMessage `json:"workload"`
+			Teardown bool            `json:"teardown"`
+		}
+		if err := json.Unmarshal(specJSON, &envelope); err != nil {
+			return fmt.Errorf("spec is not valid JSON: %w", err)
+		}
+		if envelope.Teardown {
+			return fmt.Errorf("teardown is a system-generated state and cannot be set in resource spec")
+		}
+		raw := json.RawMessage(specJSON)
+		if len(envelope.Workload) > 0 && string(envelope.Workload) != "null" {
+			raw = envelope.Workload
+		}
+		var workload kitruntime.WorkloadSpec
+		if err := json.Unmarshal(raw, &workload); err != nil {
+			return fmt.Errorf("workload does not parse as a WorkloadSpec: %w", err)
+		}
+		if err := workload.Validate(); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func normalizePage(page, limit int) (int, int) {

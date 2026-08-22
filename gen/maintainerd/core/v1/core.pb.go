@@ -25,6 +25,126 @@ const (
 	_ = protoimpl.EnforceVersion(protoimpl.MaxVersion - 20)
 )
 
+type EnrollRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	AgentUuid     string                 `protobuf:"bytes,1,opt,name=agent_uuid,json=agentUuid,proto3" json:"agent_uuid,omitempty"`
+	JoinToken     string                 `protobuf:"bytes,2,opt,name=join_token,json=joinToken,proto3" json:"join_token,omitempty"`
+	CsrPem        string                 `protobuf:"bytes,3,opt,name=csr_pem,json=csrPem,proto3" json:"csr_pem,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *EnrollRequest) Reset() {
+	*x = EnrollRequest{}
+	mi := &file_maintainerd_core_v1_core_proto_msgTypes[0]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *EnrollRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*EnrollRequest) ProtoMessage() {}
+
+func (x *EnrollRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_maintainerd_core_v1_core_proto_msgTypes[0]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use EnrollRequest.ProtoReflect.Descriptor instead.
+func (*EnrollRequest) Descriptor() ([]byte, []int) {
+	return file_maintainerd_core_v1_core_proto_rawDescGZIP(), []int{0}
+}
+
+func (x *EnrollRequest) GetAgentUuid() string {
+	if x != nil {
+		return x.AgentUuid
+	}
+	return ""
+}
+
+func (x *EnrollRequest) GetJoinToken() string {
+	if x != nil {
+		return x.JoinToken
+	}
+	return ""
+}
+
+func (x *EnrollRequest) GetCsrPem() string {
+	if x != nil {
+		return x.CsrPem
+	}
+	return ""
+}
+
+type EnrollResponse struct {
+	state            protoimpl.MessageState `protogen:"open.v1"`
+	CertificatePem   string                 `protobuf:"bytes,1,opt,name=certificate_pem,json=certificatePem,proto3" json:"certificate_pem,omitempty"`
+	CaCertificatePem string                 `protobuf:"bytes,2,opt,name=ca_certificate_pem,json=caCertificatePem,proto3" json:"ca_certificate_pem,omitempty"`
+	ExpiresAt        string                 `protobuf:"bytes,3,opt,name=expires_at,json=expiresAt,proto3" json:"expires_at,omitempty"`
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
+}
+
+func (x *EnrollResponse) Reset() {
+	*x = EnrollResponse{}
+	mi := &file_maintainerd_core_v1_core_proto_msgTypes[1]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *EnrollResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*EnrollResponse) ProtoMessage() {}
+
+func (x *EnrollResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_maintainerd_core_v1_core_proto_msgTypes[1]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use EnrollResponse.ProtoReflect.Descriptor instead.
+func (*EnrollResponse) Descriptor() ([]byte, []int) {
+	return file_maintainerd_core_v1_core_proto_rawDescGZIP(), []int{1}
+}
+
+func (x *EnrollResponse) GetCertificatePem() string {
+	if x != nil {
+		return x.CertificatePem
+	}
+	return ""
+}
+
+func (x *EnrollResponse) GetCaCertificatePem() string {
+	if x != nil {
+		return x.CaCertificatePem
+	}
+	return ""
+}
+
+func (x *EnrollResponse) GetExpiresAt() string {
+	if x != nil {
+		return x.ExpiresAt
+	}
+	return ""
+}
+
 type RegisterRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	AgentUuid     string                 `protobuf:"bytes,1,opt,name=agent_uuid,json=agentUuid,proto3" json:"agent_uuid,omitempty"`
@@ -36,7 +156,7 @@ type RegisterRequest struct {
 
 func (x *RegisterRequest) Reset() {
 	*x = RegisterRequest{}
-	mi := &file_maintainerd_core_v1_core_proto_msgTypes[0]
+	mi := &file_maintainerd_core_v1_core_proto_msgTypes[2]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -48,7 +168,7 @@ func (x *RegisterRequest) String() string {
 func (*RegisterRequest) ProtoMessage() {}
 
 func (x *RegisterRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_maintainerd_core_v1_core_proto_msgTypes[0]
+	mi := &file_maintainerd_core_v1_core_proto_msgTypes[2]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -61,7 +181,7 @@ func (x *RegisterRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RegisterRequest.ProtoReflect.Descriptor instead.
 func (*RegisterRequest) Descriptor() ([]byte, []int) {
-	return file_maintainerd_core_v1_core_proto_rawDescGZIP(), []int{0}
+	return file_maintainerd_core_v1_core_proto_rawDescGZIP(), []int{2}
 }
 
 func (x *RegisterRequest) GetAgentUuid() string {
@@ -94,7 +214,7 @@ type RegisterResponse struct {
 
 func (x *RegisterResponse) Reset() {
 	*x = RegisterResponse{}
-	mi := &file_maintainerd_core_v1_core_proto_msgTypes[1]
+	mi := &file_maintainerd_core_v1_core_proto_msgTypes[3]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -106,7 +226,7 @@ func (x *RegisterResponse) String() string {
 func (*RegisterResponse) ProtoMessage() {}
 
 func (x *RegisterResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_maintainerd_core_v1_core_proto_msgTypes[1]
+	mi := &file_maintainerd_core_v1_core_proto_msgTypes[3]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -119,7 +239,7 @@ func (x *RegisterResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RegisterResponse.ProtoReflect.Descriptor instead.
 func (*RegisterResponse) Descriptor() ([]byte, []int) {
-	return file_maintainerd_core_v1_core_proto_rawDescGZIP(), []int{1}
+	return file_maintainerd_core_v1_core_proto_rawDescGZIP(), []int{3}
 }
 
 func (x *RegisterResponse) GetOk() bool {
@@ -138,7 +258,7 @@ type HeartbeatRequest struct {
 
 func (x *HeartbeatRequest) Reset() {
 	*x = HeartbeatRequest{}
-	mi := &file_maintainerd_core_v1_core_proto_msgTypes[2]
+	mi := &file_maintainerd_core_v1_core_proto_msgTypes[4]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -150,7 +270,7 @@ func (x *HeartbeatRequest) String() string {
 func (*HeartbeatRequest) ProtoMessage() {}
 
 func (x *HeartbeatRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_maintainerd_core_v1_core_proto_msgTypes[2]
+	mi := &file_maintainerd_core_v1_core_proto_msgTypes[4]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -163,7 +283,7 @@ func (x *HeartbeatRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use HeartbeatRequest.ProtoReflect.Descriptor instead.
 func (*HeartbeatRequest) Descriptor() ([]byte, []int) {
-	return file_maintainerd_core_v1_core_proto_rawDescGZIP(), []int{2}
+	return file_maintainerd_core_v1_core_proto_rawDescGZIP(), []int{4}
 }
 
 func (x *HeartbeatRequest) GetAgentUuid() string {
@@ -182,7 +302,7 @@ type HeartbeatResponse struct {
 
 func (x *HeartbeatResponse) Reset() {
 	*x = HeartbeatResponse{}
-	mi := &file_maintainerd_core_v1_core_proto_msgTypes[3]
+	mi := &file_maintainerd_core_v1_core_proto_msgTypes[5]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -194,7 +314,7 @@ func (x *HeartbeatResponse) String() string {
 func (*HeartbeatResponse) ProtoMessage() {}
 
 func (x *HeartbeatResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_maintainerd_core_v1_core_proto_msgTypes[3]
+	mi := &file_maintainerd_core_v1_core_proto_msgTypes[5]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -207,7 +327,7 @@ func (x *HeartbeatResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use HeartbeatResponse.ProtoReflect.Descriptor instead.
 func (*HeartbeatResponse) Descriptor() ([]byte, []int) {
-	return file_maintainerd_core_v1_core_proto_rawDescGZIP(), []int{3}
+	return file_maintainerd_core_v1_core_proto_rawDescGZIP(), []int{5}
 }
 
 func (x *HeartbeatResponse) GetOk() bool {
@@ -227,7 +347,7 @@ type PullWorkRequest struct {
 
 func (x *PullWorkRequest) Reset() {
 	*x = PullWorkRequest{}
-	mi := &file_maintainerd_core_v1_core_proto_msgTypes[4]
+	mi := &file_maintainerd_core_v1_core_proto_msgTypes[6]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -239,7 +359,7 @@ func (x *PullWorkRequest) String() string {
 func (*PullWorkRequest) ProtoMessage() {}
 
 func (x *PullWorkRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_maintainerd_core_v1_core_proto_msgTypes[4]
+	mi := &file_maintainerd_core_v1_core_proto_msgTypes[6]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -252,7 +372,7 @@ func (x *PullWorkRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PullWorkRequest.ProtoReflect.Descriptor instead.
 func (*PullWorkRequest) Descriptor() ([]byte, []int) {
-	return file_maintainerd_core_v1_core_proto_rawDescGZIP(), []int{4}
+	return file_maintainerd_core_v1_core_proto_rawDescGZIP(), []int{6}
 }
 
 func (x *PullWorkRequest) GetAgentUuid() string {
@@ -284,7 +404,7 @@ type WorkItem struct {
 
 func (x *WorkItem) Reset() {
 	*x = WorkItem{}
-	mi := &file_maintainerd_core_v1_core_proto_msgTypes[5]
+	mi := &file_maintainerd_core_v1_core_proto_msgTypes[7]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -296,7 +416,7 @@ func (x *WorkItem) String() string {
 func (*WorkItem) ProtoMessage() {}
 
 func (x *WorkItem) ProtoReflect() protoreflect.Message {
-	mi := &file_maintainerd_core_v1_core_proto_msgTypes[5]
+	mi := &file_maintainerd_core_v1_core_proto_msgTypes[7]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -309,7 +429,7 @@ func (x *WorkItem) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use WorkItem.ProtoReflect.Descriptor instead.
 func (*WorkItem) Descriptor() ([]byte, []int) {
-	return file_maintainerd_core_v1_core_proto_rawDescGZIP(), []int{5}
+	return file_maintainerd_core_v1_core_proto_rawDescGZIP(), []int{7}
 }
 
 func (x *WorkItem) GetResourceUuid() string {
@@ -356,7 +476,7 @@ type PullWorkResponse struct {
 
 func (x *PullWorkResponse) Reset() {
 	*x = PullWorkResponse{}
-	mi := &file_maintainerd_core_v1_core_proto_msgTypes[6]
+	mi := &file_maintainerd_core_v1_core_proto_msgTypes[8]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -368,7 +488,7 @@ func (x *PullWorkResponse) String() string {
 func (*PullWorkResponse) ProtoMessage() {}
 
 func (x *PullWorkResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_maintainerd_core_v1_core_proto_msgTypes[6]
+	mi := &file_maintainerd_core_v1_core_proto_msgTypes[8]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -381,7 +501,7 @@ func (x *PullWorkResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PullWorkResponse.ProtoReflect.Descriptor instead.
 func (*PullWorkResponse) Descriptor() ([]byte, []int) {
-	return file_maintainerd_core_v1_core_proto_rawDescGZIP(), []int{6}
+	return file_maintainerd_core_v1_core_proto_rawDescGZIP(), []int{8}
 }
 
 func (x *PullWorkResponse) GetItems() []*WorkItem {
@@ -404,7 +524,7 @@ type StatusReport struct {
 
 func (x *StatusReport) Reset() {
 	*x = StatusReport{}
-	mi := &file_maintainerd_core_v1_core_proto_msgTypes[7]
+	mi := &file_maintainerd_core_v1_core_proto_msgTypes[9]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -416,7 +536,7 @@ func (x *StatusReport) String() string {
 func (*StatusReport) ProtoMessage() {}
 
 func (x *StatusReport) ProtoReflect() protoreflect.Message {
-	mi := &file_maintainerd_core_v1_core_proto_msgTypes[7]
+	mi := &file_maintainerd_core_v1_core_proto_msgTypes[9]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -429,7 +549,7 @@ func (x *StatusReport) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use StatusReport.ProtoReflect.Descriptor instead.
 func (*StatusReport) Descriptor() ([]byte, []int) {
-	return file_maintainerd_core_v1_core_proto_rawDescGZIP(), []int{7}
+	return file_maintainerd_core_v1_core_proto_rawDescGZIP(), []int{9}
 }
 
 func (x *StatusReport) GetResourceUuid() string {
@@ -470,7 +590,7 @@ type ReportStatusRequest struct {
 
 func (x *ReportStatusRequest) Reset() {
 	*x = ReportStatusRequest{}
-	mi := &file_maintainerd_core_v1_core_proto_msgTypes[8]
+	mi := &file_maintainerd_core_v1_core_proto_msgTypes[10]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -482,7 +602,7 @@ func (x *ReportStatusRequest) String() string {
 func (*ReportStatusRequest) ProtoMessage() {}
 
 func (x *ReportStatusRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_maintainerd_core_v1_core_proto_msgTypes[8]
+	mi := &file_maintainerd_core_v1_core_proto_msgTypes[10]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -495,7 +615,7 @@ func (x *ReportStatusRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ReportStatusRequest.ProtoReflect.Descriptor instead.
 func (*ReportStatusRequest) Descriptor() ([]byte, []int) {
-	return file_maintainerd_core_v1_core_proto_rawDescGZIP(), []int{8}
+	return file_maintainerd_core_v1_core_proto_rawDescGZIP(), []int{10}
 }
 
 func (x *ReportStatusRequest) GetAgentUuid() string {
@@ -521,7 +641,7 @@ type ReportStatusResponse struct {
 
 func (x *ReportStatusResponse) Reset() {
 	*x = ReportStatusResponse{}
-	mi := &file_maintainerd_core_v1_core_proto_msgTypes[9]
+	mi := &file_maintainerd_core_v1_core_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -533,7 +653,7 @@ func (x *ReportStatusResponse) String() string {
 func (*ReportStatusResponse) ProtoMessage() {}
 
 func (x *ReportStatusResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_maintainerd_core_v1_core_proto_msgTypes[9]
+	mi := &file_maintainerd_core_v1_core_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -546,7 +666,7 @@ func (x *ReportStatusResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ReportStatusResponse.ProtoReflect.Descriptor instead.
 func (*ReportStatusResponse) Descriptor() ([]byte, []int) {
-	return file_maintainerd_core_v1_core_proto_rawDescGZIP(), []int{9}
+	return file_maintainerd_core_v1_core_proto_rawDescGZIP(), []int{11}
 }
 
 func (x *ReportStatusResponse) GetAccepted() int32 {
@@ -560,7 +680,18 @@ var File_maintainerd_core_v1_core_proto protoreflect.FileDescriptor
 
 const file_maintainerd_core_v1_core_proto_rawDesc = "" +
 	"\n" +
-	"\x1emaintainerd/core/v1/core.proto\x12\x13maintainerd.core.v1\"n\n" +
+	"\x1emaintainerd/core/v1/core.proto\x12\x13maintainerd.core.v1\"f\n" +
+	"\rEnrollRequest\x12\x1d\n" +
+	"\n" +
+	"agent_uuid\x18\x01 \x01(\tR\tagentUuid\x12\x1d\n" +
+	"\n" +
+	"join_token\x18\x02 \x01(\tR\tjoinToken\x12\x17\n" +
+	"\acsr_pem\x18\x03 \x01(\tR\x06csrPem\"\x86\x01\n" +
+	"\x0eEnrollResponse\x12'\n" +
+	"\x0fcertificate_pem\x18\x01 \x01(\tR\x0ecertificatePem\x12,\n" +
+	"\x12ca_certificate_pem\x18\x02 \x01(\tR\x10caCertificatePem\x12\x1d\n" +
+	"\n" +
+	"expires_at\x18\x03 \x01(\tR\texpiresAt\"n\n" +
 	"\x0fRegisterRequest\x12\x1d\n" +
 	"\n" +
 	"agent_uuid\x18\x01 \x01(\tR\tagentUuid\x12\x18\n" +
@@ -598,8 +729,9 @@ const file_maintainerd_core_v1_core_proto_rawDesc = "" +
 	"agent_uuid\x18\x01 \x01(\tR\tagentUuid\x12;\n" +
 	"\areports\x18\x02 \x03(\v2!.maintainerd.core.v1.StatusReportR\areports\"2\n" +
 	"\x14ReportStatusResponse\x12\x1a\n" +
-	"\baccepted\x18\x01 \x01(\x05R\baccepted2\x88\x03\n" +
-	"\x13AgentGatewayService\x12W\n" +
+	"\baccepted\x18\x01 \x01(\x05R\baccepted2\xdb\x03\n" +
+	"\x13AgentGatewayService\x12Q\n" +
+	"\x06Enroll\x12\".maintainerd.core.v1.EnrollRequest\x1a#.maintainerd.core.v1.EnrollResponse\x12W\n" +
 	"\bRegister\x12$.maintainerd.core.v1.RegisterRequest\x1a%.maintainerd.core.v1.RegisterResponse\x12Z\n" +
 	"\tHeartbeat\x12%.maintainerd.core.v1.HeartbeatRequest\x1a&.maintainerd.core.v1.HeartbeatResponse\x12W\n" +
 	"\bPullWork\x12$.maintainerd.core.v1.PullWorkRequest\x1a%.maintainerd.core.v1.PullWorkResponse\x12c\n" +
@@ -617,35 +749,39 @@ func file_maintainerd_core_v1_core_proto_rawDescGZIP() []byte {
 	return file_maintainerd_core_v1_core_proto_rawDescData
 }
 
-var file_maintainerd_core_v1_core_proto_msgTypes = make([]protoimpl.MessageInfo, 10)
+var file_maintainerd_core_v1_core_proto_msgTypes = make([]protoimpl.MessageInfo, 12)
 var file_maintainerd_core_v1_core_proto_goTypes = []any{
-	(*RegisterRequest)(nil),      // 0: maintainerd.core.v1.RegisterRequest
-	(*RegisterResponse)(nil),     // 1: maintainerd.core.v1.RegisterResponse
-	(*HeartbeatRequest)(nil),     // 2: maintainerd.core.v1.HeartbeatRequest
-	(*HeartbeatResponse)(nil),    // 3: maintainerd.core.v1.HeartbeatResponse
-	(*PullWorkRequest)(nil),      // 4: maintainerd.core.v1.PullWorkRequest
-	(*WorkItem)(nil),             // 5: maintainerd.core.v1.WorkItem
-	(*PullWorkResponse)(nil),     // 6: maintainerd.core.v1.PullWorkResponse
-	(*StatusReport)(nil),         // 7: maintainerd.core.v1.StatusReport
-	(*ReportStatusRequest)(nil),  // 8: maintainerd.core.v1.ReportStatusRequest
-	(*ReportStatusResponse)(nil), // 9: maintainerd.core.v1.ReportStatusResponse
+	(*EnrollRequest)(nil),        // 0: maintainerd.core.v1.EnrollRequest
+	(*EnrollResponse)(nil),       // 1: maintainerd.core.v1.EnrollResponse
+	(*RegisterRequest)(nil),      // 2: maintainerd.core.v1.RegisterRequest
+	(*RegisterResponse)(nil),     // 3: maintainerd.core.v1.RegisterResponse
+	(*HeartbeatRequest)(nil),     // 4: maintainerd.core.v1.HeartbeatRequest
+	(*HeartbeatResponse)(nil),    // 5: maintainerd.core.v1.HeartbeatResponse
+	(*PullWorkRequest)(nil),      // 6: maintainerd.core.v1.PullWorkRequest
+	(*WorkItem)(nil),             // 7: maintainerd.core.v1.WorkItem
+	(*PullWorkResponse)(nil),     // 8: maintainerd.core.v1.PullWorkResponse
+	(*StatusReport)(nil),         // 9: maintainerd.core.v1.StatusReport
+	(*ReportStatusRequest)(nil),  // 10: maintainerd.core.v1.ReportStatusRequest
+	(*ReportStatusResponse)(nil), // 11: maintainerd.core.v1.ReportStatusResponse
 }
 var file_maintainerd_core_v1_core_proto_depIdxs = []int32{
-	5, // 0: maintainerd.core.v1.PullWorkResponse.items:type_name -> maintainerd.core.v1.WorkItem
-	7, // 1: maintainerd.core.v1.ReportStatusRequest.reports:type_name -> maintainerd.core.v1.StatusReport
-	0, // 2: maintainerd.core.v1.AgentGatewayService.Register:input_type -> maintainerd.core.v1.RegisterRequest
-	2, // 3: maintainerd.core.v1.AgentGatewayService.Heartbeat:input_type -> maintainerd.core.v1.HeartbeatRequest
-	4, // 4: maintainerd.core.v1.AgentGatewayService.PullWork:input_type -> maintainerd.core.v1.PullWorkRequest
-	8, // 5: maintainerd.core.v1.AgentGatewayService.ReportStatus:input_type -> maintainerd.core.v1.ReportStatusRequest
-	1, // 6: maintainerd.core.v1.AgentGatewayService.Register:output_type -> maintainerd.core.v1.RegisterResponse
-	3, // 7: maintainerd.core.v1.AgentGatewayService.Heartbeat:output_type -> maintainerd.core.v1.HeartbeatResponse
-	6, // 8: maintainerd.core.v1.AgentGatewayService.PullWork:output_type -> maintainerd.core.v1.PullWorkResponse
-	9, // 9: maintainerd.core.v1.AgentGatewayService.ReportStatus:output_type -> maintainerd.core.v1.ReportStatusResponse
-	6, // [6:10] is the sub-list for method output_type
-	2, // [2:6] is the sub-list for method input_type
-	2, // [2:2] is the sub-list for extension type_name
-	2, // [2:2] is the sub-list for extension extendee
-	0, // [0:2] is the sub-list for field type_name
+	7,  // 0: maintainerd.core.v1.PullWorkResponse.items:type_name -> maintainerd.core.v1.WorkItem
+	9,  // 1: maintainerd.core.v1.ReportStatusRequest.reports:type_name -> maintainerd.core.v1.StatusReport
+	0,  // 2: maintainerd.core.v1.AgentGatewayService.Enroll:input_type -> maintainerd.core.v1.EnrollRequest
+	2,  // 3: maintainerd.core.v1.AgentGatewayService.Register:input_type -> maintainerd.core.v1.RegisterRequest
+	4,  // 4: maintainerd.core.v1.AgentGatewayService.Heartbeat:input_type -> maintainerd.core.v1.HeartbeatRequest
+	6,  // 5: maintainerd.core.v1.AgentGatewayService.PullWork:input_type -> maintainerd.core.v1.PullWorkRequest
+	10, // 6: maintainerd.core.v1.AgentGatewayService.ReportStatus:input_type -> maintainerd.core.v1.ReportStatusRequest
+	1,  // 7: maintainerd.core.v1.AgentGatewayService.Enroll:output_type -> maintainerd.core.v1.EnrollResponse
+	3,  // 8: maintainerd.core.v1.AgentGatewayService.Register:output_type -> maintainerd.core.v1.RegisterResponse
+	5,  // 9: maintainerd.core.v1.AgentGatewayService.Heartbeat:output_type -> maintainerd.core.v1.HeartbeatResponse
+	8,  // 10: maintainerd.core.v1.AgentGatewayService.PullWork:output_type -> maintainerd.core.v1.PullWorkResponse
+	11, // 11: maintainerd.core.v1.AgentGatewayService.ReportStatus:output_type -> maintainerd.core.v1.ReportStatusResponse
+	7,  // [7:12] is the sub-list for method output_type
+	2,  // [2:7] is the sub-list for method input_type
+	2,  // [2:2] is the sub-list for extension type_name
+	2,  // [2:2] is the sub-list for extension extendee
+	0,  // [0:2] is the sub-list for field type_name
 }
 
 func init() { file_maintainerd_core_v1_core_proto_init() }
@@ -659,7 +795,7 @@ func file_maintainerd_core_v1_core_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_maintainerd_core_v1_core_proto_rawDesc), len(file_maintainerd_core_v1_core_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   10,
+			NumMessages:   12,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

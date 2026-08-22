@@ -1,6 +1,10 @@
 -- name: CreateResource :one
-INSERT INTO resources (tenant_id, project_id, provider_id, agent_id, owner_resource_id, kind, name, spec, metadata)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+INSERT INTO resources (
+    tenant_id, project_id, provider_id, agent_id, owner_resource_id,
+    mrn_service, mrn_tenant, mrn_project, mrn_resource_type, mrn_resource_path,
+    kind, name, spec, metadata
+)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
 RETURNING *;
 
 -- name: GetResourceByID :one
@@ -31,7 +35,9 @@ LIMIT $2 OFFSET $3;
 -- desired state actually changes — never by the failing spec being retried
 -- forever on its own.
 UPDATE resources
-SET spec = $2, metadata = $3, generation = generation + 1, state = 'pending',
+SET spec = $2, metadata = $3,
+    mrn_service = $4, mrn_tenant = $5, mrn_project = $6, mrn_resource_type = $7, mrn_resource_path = $8,
+    generation = generation + 1, state = 'pending',
     attempts = 0, next_attempt_at = NULL, updated_at = now()
 WHERE resource_uuid = $1 AND deleted_at IS NULL
 RETURNING *;

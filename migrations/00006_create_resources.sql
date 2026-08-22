@@ -14,6 +14,13 @@ CREATE TABLE IF NOT EXISTS resources (
     provider_id         BIGINT REFERENCES providers (provider_id) ON DELETE SET NULL,
     agent_id            BIGINT REFERENCES agents (agent_id) ON DELETE SET NULL,
     owner_resource_id   BIGINT REFERENCES resources (resource_id) ON DELETE CASCADE,
+    -- Parsed MRN components. The mrn: string is presentation-only; policy and
+    -- lookup code use these columns so matching stays segment-aware.
+    mrn_service         VARCHAR(63) NOT NULL DEFAULT 'core',
+    mrn_tenant          VARCHAR(63) NOT NULL DEFAULT '',
+    mrn_project         VARCHAR(63) NOT NULL DEFAULT '',
+    mrn_resource_type   VARCHAR(63) NOT NULL DEFAULT '',
+    mrn_resource_path   TEXT NOT NULL DEFAULT '',
     kind                VARCHAR(50) NOT NULL,
     name                VARCHAR(100) NOT NULL,
     state               VARCHAR(20) NOT NULL DEFAULT 'pending',
@@ -46,6 +53,7 @@ CREATE INDEX IF NOT EXISTS idx_resources_project_id ON resources (project_id);
 CREATE INDEX IF NOT EXISTS idx_resources_provider_id ON resources (provider_id);
 CREATE INDEX IF NOT EXISTS idx_resources_agent_id ON resources (agent_id);
 CREATE INDEX IF NOT EXISTS idx_resources_owner_resource_id ON resources (owner_resource_id);
+CREATE INDEX IF NOT EXISTS idx_resources_mrn ON resources (mrn_service, mrn_tenant, mrn_project, mrn_resource_type, mrn_resource_path);
 CREATE INDEX IF NOT EXISTS idx_resources_kind ON resources (kind);
 CREATE INDEX IF NOT EXISTS idx_resources_state ON resources (state);
 -- The reconciler's hot query: rows whose observed state is behind their desired

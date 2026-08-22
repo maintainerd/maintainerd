@@ -90,6 +90,36 @@ func (q *Queries) GetProjectByID(ctx context.Context, projectID int64) (Project,
 	return i, err
 }
 
+const getProjectByTenantAndName = `-- name: GetProjectByTenantAndName :one
+SELECT project_id, project_uuid, tenant_id, name, display_name, description, status, metadata, created_by, updated_by, created_at, updated_at, deleted_at FROM projects WHERE tenant_id = $1 AND name = $2 AND deleted_at IS NULL
+`
+
+type GetProjectByTenantAndNameParams struct {
+	TenantID int64  `json:"tenant_id"`
+	Name     string `json:"name"`
+}
+
+func (q *Queries) GetProjectByTenantAndName(ctx context.Context, arg GetProjectByTenantAndNameParams) (Project, error) {
+	row := q.db.QueryRow(ctx, getProjectByTenantAndName, arg.TenantID, arg.Name)
+	var i Project
+	err := row.Scan(
+		&i.ProjectID,
+		&i.ProjectUuid,
+		&i.TenantID,
+		&i.Name,
+		&i.DisplayName,
+		&i.Description,
+		&i.Status,
+		&i.Metadata,
+		&i.CreatedBy,
+		&i.UpdatedBy,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.DeletedAt,
+	)
+	return i, err
+}
+
 const getProjectByUUID = `-- name: GetProjectByUUID :one
 SELECT project_id, project_uuid, tenant_id, name, display_name, description, status, metadata, created_by, updated_by, created_at, updated_at, deleted_at FROM projects WHERE project_uuid = $1 AND deleted_at IS NULL
 `

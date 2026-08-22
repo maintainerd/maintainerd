@@ -36,12 +36,14 @@ type Querier interface {
 	// of the feed until it expires or a status report releases it.
 	ClaimAgentWork(ctx context.Context, arg ClaimAgentWorkParams) ([]Resource, error)
 	CountAgentsByTenant(ctx context.Context, tenantID int64) (int64, error)
+	CountDeploymentTemplates(ctx context.Context) (int64, error)
 	CountProjectsByTenant(ctx context.Context, tenantID int64) (int64, error)
 	CountProvidersByTenant(ctx context.Context, tenantID int64) (int64, error)
 	CountResourcesByProject(ctx context.Context, projectID int64) (int64, error)
 	CountServicesByTenant(ctx context.Context, tenantID int64) (int64, error)
 	CountTenants(ctx context.Context) (int64, error)
 	CreateAgent(ctx context.Context, arg CreateAgentParams) (Agent, error)
+	CreateDeploymentTemplate(ctx context.Context, arg CreateDeploymentTemplateParams) (DeploymentTemplate, error)
 	CreateProject(ctx context.Context, arg CreateProjectParams) (Project, error)
 	CreateProvider(ctx context.Context, arg CreateProviderParams) (Provider, error)
 	CreateResource(ctx context.Context, arg CreateResourceParams) (Resource, error)
@@ -50,7 +52,9 @@ type Querier interface {
 	GetAgentByID(ctx context.Context, agentID int64) (Agent, error)
 	GetAgentByUUID(ctx context.Context, agentUuid uuid.UUID) (Agent, error)
 	GetControlPlane(ctx context.Context) (ControlPlane, error)
+	GetDeploymentTemplate(ctx context.Context, arg GetDeploymentTemplateParams) (DeploymentTemplate, error)
 	GetProjectByID(ctx context.Context, projectID int64) (Project, error)
+	GetProjectByTenantAndName(ctx context.Context, arg GetProjectByTenantAndNameParams) (Project, error)
 	GetProjectByUUID(ctx context.Context, projectUuid uuid.UUID) (Project, error)
 	GetProviderByID(ctx context.Context, providerID int64) (Provider, error)
 	GetProviderByUUID(ctx context.Context, providerUuid uuid.UUID) (Provider, error)
@@ -65,6 +69,7 @@ type Querier interface {
 	GetTenantByName(ctx context.Context, name string) (Tenant, error)
 	GetTenantByUUID(ctx context.Context, tenantUuid uuid.UUID) (Tenant, error)
 	ListAgentsByTenant(ctx context.Context, arg ListAgentsByTenantParams) ([]Agent, error)
+	ListDeploymentTemplates(ctx context.Context, arg ListDeploymentTemplatesParams) ([]DeploymentTemplate, error)
 	// The reconciler's work feed (read-only variant; the gateway uses ClaimAgentWork
 	// which additionally stamps the lease + agent assignment). A row is fed when:
 	//   * its observed state lags its spec, OR it is being torn down ('deleting'),
@@ -82,6 +87,7 @@ type Querier interface {
 	// The platform's system services — the ones Core must keep running at all times.
 	ListSystemServices(ctx context.Context) ([]Service, error)
 	ListTenants(ctx context.Context, arg ListTenantsParams) ([]Tenant, error)
+	MarkAgentEnrolled(ctx context.Context, arg MarkAgentEnrolledParams) (Agent, error)
 	// Deletion is a desired-state change, not an immediate erase: the row flips to
 	// state='deleting' but keeps deleted_at NULL so it stays IN the work feed and
 	// PullWork ships it to its agent as a teardown envelope. Only the agent's
@@ -89,6 +95,7 @@ type Querier interface {
 	// otherwise the workload would keep running on the host with no record of it.
 	MarkResourceDeleting(ctx context.Context, resourceUuid uuid.UUID) error
 	SoftDeleteAgent(ctx context.Context, agentUuid uuid.UUID) error
+	SoftDeleteDeploymentTemplate(ctx context.Context, arg SoftDeleteDeploymentTemplateParams) error
 	SoftDeleteProject(ctx context.Context, projectUuid uuid.UUID) error
 	SoftDeleteProvider(ctx context.Context, providerUuid uuid.UUID) error
 	SoftDeleteService(ctx context.Context, serviceUuid uuid.UUID) error

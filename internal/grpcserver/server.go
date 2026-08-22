@@ -20,6 +20,7 @@ import (
 	"github.com/google/uuid"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/health"
 	healthpb "google.golang.org/grpc/health/grpc_health_v1"
 	"google.golang.org/grpc/reflection"
@@ -96,6 +97,10 @@ type Options struct {
 	// AttemptBudget is how many failed convergence attempts a resource gets
 	// before it parks as state 'failed' until a spec change.
 	AttemptBudget int
+	// Agent enrollment signing material.
+	AgentCACertPEM []byte
+	AgentCAKeyPEM  []byte
+	AgentCertTTL   time.Duration
 }
 
 // AgentGateway implements corev1.AgentGatewayServer over the domain services.
@@ -114,6 +119,36 @@ func NewAgentGateway(agents *agent.Service, resources *resource.Service, opts Op
 		opts.AttemptBudget = 10
 	}
 	return &AgentGateway{agents: agents, resources: resources, opts: opts}
+}
+
+// Enroll is the one pre-identity gateway RPC. It consumes a one-time join token
+// and signs the agent's CSR so subsequent RPCs can present a verified client
+// certificate. Bearer auth and mTLS are intentionally enforced by the handler
+// here, not the interceptor.
+func (g *AgentGateway) Enroll(ctx context.Context, req *corev1.EnrollRequest) (*corev1.EnrollResponse, error) {
+	if len(g.opts.AgentCACertPEM) == 0 || len(g.opts.AgentCAKeyPEM) == 0 {
+		return nil, status.Error(codes.FailedPrecondition, "agent enrollment CA is not configured")
+	}
+	id, err := uuid.Parse(req.GetAgentUuid())
+	if err != nil {
+		return nil, status.Error(codes.InvalidArgument, "invalid agent_uuid")
+	}
+	enrolled, err := g.agents.Enroll(ctx, agent.EnrollInput{
+		AgentUUID: id,
+		JoinToken: req.GetJoinToken(),
+		CSRPem:    []byte(req.GetCsrPem()),
+		CACertPEM: g.opts.AgentCACertPEM,
+		CAKeyPEM:  g.opts.AgentCAKeyPEM,
+		CertTTL:   g.opts.AgentCertTTL,
+	})
+	if err != nil {
+		return nil, toStatus(err)
+	}
+	return &corev1.EnrollResponse{
+		CertificatePem:   string(enrolled.CertificatePEM),
+		CaCertificatePem: string(enrolled.CACertPEM),
+		ExpiresAt:        enrolled.ExpiresAt.Format(time.RFC3339),
+	}, nil
 }
 
 // callerSubject returns the verified token subject for this RPC. With binding
@@ -326,16 +361,26 @@ func toStatus(err error) error {
 //
 // gRPC reflection is a discovery aid and an attacker's site map; it registers
 // in development only.
-func Serve(ctx context.Context, addr string, gw *AgentGateway, guard Guard) error {
+func Serve(ctx context.Context, addr string, gw *AgentGateway, guard Guard, tlsOpts TLSOptions) error {
 	lis, err := net.Listen("tcp", addr)
 	if err != nil {
 		return err
 	}
 
 	var opts []grpc.ServerOption
+	if tlsCfg, err := serverTLSConfig(tlsOpts); err != nil {
+		return err
+	} else if tlsCfg != nil {
+		opts = append(opts, grpc.Creds(credentials.NewTLS(tlsCfg)))
+	}
 	switch guard.Mode {
 	case GuardEnforced:
-		opts = append(opts, grpc.ChainUnaryInterceptor(AuthUnaryInterceptor(guard.Verify)))
+		interceptors := []grpc.UnaryServerInterceptor{}
+		if tlsOpts.RequireClientCert {
+			interceptors = append(interceptors, RequireClientCertUnaryInterceptor())
+		}
+		interceptors = append(interceptors, AuthUnaryInterceptor(guard.Verify))
+		opts = append(opts, grpc.ChainUnaryInterceptor(interceptors...))
 	case GuardDevOpen:
 		slog.Warn("SECURITY: AgentGateway gRPC surface is UNAUTHENTICATED (development only)",
 			"disabled_guards", "bearer-token verification, permission core:agent:gateway, agent identity binding (bound_subject)",

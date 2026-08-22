@@ -18,6 +18,7 @@ type Repository interface {
 	CountAgentsByTenant(ctx context.Context, tenantID int64) (int64, error)
 	UpdateAgentStatus(ctx context.Context, arg storage.UpdateAgentStatusParams) (storage.Agent, error)
 	BindAgentSubject(ctx context.Context, arg storage.BindAgentSubjectParams) (storage.Agent, error)
+	MarkAgentEnrolled(ctx context.Context, arg storage.MarkAgentEnrolledParams) (storage.Agent, error)
 	AgentHeartbeat(ctx context.Context, agentUUID uuid.UUID) (storage.Agent, error)
 	SoftDeleteAgent(ctx context.Context, agentUUID uuid.UUID) error
 }

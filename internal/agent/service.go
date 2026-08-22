@@ -2,6 +2,11 @@ package agent
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/sha256"
+	"crypto/subtle"
+	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"time"
@@ -34,6 +39,7 @@ type Agent struct {
 	Capabilities []string       `json:"capabilities"`
 	LastSeenAt   *time.Time     `json:"last_seen_at,omitempty"`
 	Metadata     map[string]any `json:"metadata"`
+	JoinToken    string         `json:"join_token,omitempty"`
 	CreatedAt    time.Time      `json:"created_at"`
 	UpdatedAt    time.Time      `json:"updated_at"`
 }
@@ -77,19 +83,25 @@ func (s *Service) Create(ctx context.Context, in CreateInput) (*Agent, error) {
 	if err != nil {
 		return nil, apperror.NewValidation("invalid metadata")
 	}
+	joinToken, joinHash, err := newJoinToken()
+	if err != nil {
+		return nil, err
+	}
 	row, err := s.q.CreateAgent(ctx, storage.CreateAgentParams{
-		TenantID:     t.TenantID,
-		Name:         in.Name,
-		Status:       "pending",
-		Endpoint:     in.Endpoint,
-		Version:      in.Version,
-		Capabilities: caps,
-		Metadata:     meta,
+		TenantID:      t.TenantID,
+		Name:          in.Name,
+		Status:        "pending",
+		Endpoint:      in.Endpoint,
+		Version:       in.Version,
+		Capabilities:  caps,
+		Metadata:      meta,
+		JoinTokenHash: joinHash,
 	})
 	if err != nil {
 		return nil, err
 	}
 	a := toAgent(row, t.TenantUuid)
+	a.JoinToken = joinToken
 	return &a, nil
 }
 
@@ -262,6 +274,77 @@ func (s *Service) Heartbeat(ctx context.Context, id uuid.UUID) (*Agent, error) {
 	return &a, nil
 }
 
+type EnrollInput struct {
+	AgentUUID uuid.UUID
+	JoinToken string
+	CSRPem    []byte
+	CACertPEM []byte
+	CAKeyPEM  []byte
+	CertTTL   time.Duration
+}
+
+type Enrollment struct {
+	Agent          Agent
+	CertificatePEM []byte
+	CACertPEM      []byte
+	ExpiresAt      time.Time
+}
+
+// Enroll consumes a one-time join token and signs the agent's CSR with Core's
+// agent-client CA. The token is deliberately verified in Core's storage path
+// instead of by the gRPC interceptor: enrollment is the pre-identity exchange
+// that creates the mTLS credential later RPCs require.
+func (s *Service) Enroll(ctx context.Context, in EnrollInput) (*Enrollment, error) {
+	if in.AgentUUID == uuid.Nil {
+		return nil, apperror.NewValidation("agent_uuid is required")
+	}
+	if in.JoinToken == "" {
+		return nil, apperror.NewValidation("join_token is required")
+	}
+	if len(in.CSRPem) == 0 {
+		return nil, apperror.NewValidation("csr_pem is required")
+	}
+	current, err := s.q.GetAgentByUUID(ctx, in.AgentUUID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, apperror.NewNotFound("agent")
+	}
+	if err != nil {
+		return nil, err
+	}
+	if current.JoinTokenHash == "" || current.JoinTokenUsedAt.Valid {
+		return nil, apperror.NewForbidden("agent join token has already been used")
+	}
+	if !joinTokenMatches(current.JoinTokenHash, in.JoinToken) {
+		return nil, apperror.NewForbidden("invalid agent join token")
+	}
+	certPEM, expiresAt, err := SignAgentCSR(SignAgentCSRInput{
+		AgentUUID: in.AgentUUID,
+		CSRPEM:    in.CSRPem,
+		CACertPEM: in.CACertPEM,
+		CAKeyPEM:  in.CAKeyPEM,
+		TTL:       in.CertTTL,
+	})
+	if err != nil {
+		return nil, apperror.NewValidation(err.Error())
+	}
+	row, err := s.q.MarkAgentEnrolled(ctx, storage.MarkAgentEnrolledParams{
+		AgentUuid:     in.AgentUUID,
+		ClientCertPem: string(certPEM),
+	})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, apperror.NewForbidden("agent join token has already been used")
+	}
+	if err != nil {
+		return nil, err
+	}
+	tenantUUID, err := s.resolveTenantUUID(ctx, row.TenantID)
+	if err != nil {
+		return nil, err
+	}
+	a := toAgent(row, tenantUUID)
+	return &Enrollment{Agent: a, CertificatePEM: certPEM, CACertPEM: in.CACertPEM, ExpiresAt: expiresAt}, nil
+}
+
 func (s *Service) Delete(ctx context.Context, id uuid.UUID) error {
 	return s.q.SoftDeleteAgent(ctx, id)
 }
@@ -329,4 +412,27 @@ func normalizePage(page, limit int) (int, int) {
 		limit = 20
 	}
 	return page, limit
+}
+
+func newJoinToken() (token string, hash string, err error) {
+	var b [32]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return "", "", err
+	}
+	token = base64.RawURLEncoding.EncodeToString(b[:])
+	return token, joinTokenHash(token), nil
+}
+
+func joinTokenHash(token string) string {
+	sum := sha256.Sum256([]byte(token))
+	return hex.EncodeToString(sum[:])
+}
+
+func joinTokenMatches(hash, token string) bool {
+	want, err := hex.DecodeString(hash)
+	if err != nil {
+		return false
+	}
+	got := sha256.Sum256([]byte(token))
+	return subtle.ConstantTimeCompare(want, got[:]) == 1
 }

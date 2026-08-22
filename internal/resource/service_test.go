@@ -25,16 +25,19 @@ type fakeRepo struct {
 }
 
 func (f *fakeRepo) GetProjectByUUID(context.Context, uuid.UUID) (storage.Project, error) {
-	panic("not used")
+	return storage.Project{ProjectID: 1, ProjectUuid: uuid.New(), TenantID: 1, Name: "billing-app"}, nil
 }
 func (f *fakeRepo) GetProjectByID(context.Context, int64) (storage.Project, error) {
-	return storage.Project{ProjectID: 1, ProjectUuid: uuid.New()}, nil
+	return storage.Project{ProjectID: 1, ProjectUuid: uuid.New(), TenantID: 1, Name: "billing-app"}, nil
+}
+func (f *fakeRepo) GetTenantByID(context.Context, int64) (storage.Tenant, error) {
+	return storage.Tenant{TenantID: 1, Name: "acme"}, nil
 }
 func (f *fakeRepo) GetProviderByUUID(context.Context, uuid.UUID) (storage.Provider, error) {
 	panic("not used")
 }
 func (f *fakeRepo) CreateResource(context.Context, storage.CreateResourceParams) (storage.Resource, error) {
-	panic("not used")
+	return f.row, nil
 }
 func (f *fakeRepo) GetResourceByUUID(_ context.Context, id uuid.UUID) (storage.Resource, error) {
 	if id != f.row.ResourceUuid {
@@ -241,4 +244,45 @@ func TestDeleteMarksDeletingInsteadOfErasing(t *testing.T) {
 	svc := NewService(repo)
 	require.NoError(t, svc.Delete(context.Background(), repo.row.ResourceUuid))
 	assert.Equal(t, []uuid.UUID{repo.row.ResourceUuid}, repo.deleted)
+}
+
+func TestBuildMRN(t *testing.T) {
+	parts, err := buildMRN("acme", "billing-app", "Container", "web", map[string]any{
+		"mrn_service":       "runtime",
+		"mrn_resource_type": "instance",
+		"mrn_resource_path": "web-1",
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "runtime", parts.Service)
+	assert.Equal(t, "acme", parts.Tenant)
+	assert.Equal(t, "billing-app", parts.Project)
+	assert.Equal(t, "instance", parts.ResourceType)
+	assert.Equal(t, "web-1", parts.ResourcePath)
+	assert.Equal(t, "mrn:runtime:acme:billing-app:instance/web-1",
+		renderMRN(parts.Service, parts.Tenant, parts.Project, parts.ResourceType, parts.ResourcePath))
+}
+
+func TestValidateSpec(t *testing.T) {
+	tests := []struct {
+		name    string
+		kind    string
+		spec    []byte
+		wantErr bool
+	}{
+		{"container legacy valid", "Container", []byte(`{"image":"nginx:1","name":"web"}`), false},
+		{"workload envelope valid", "Workload", []byte(`{"workload":{"image":"nginx:1","name":"web"}}`), false},
+		{"container missing image", "Container", []byte(`{"name":"web"}`), true},
+		{"teardown rejected", "Container", []byte(`{"teardown":true}`), true},
+		{"other kinds pass through", "Database", []byte(`{}`), false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateSpec(tt.kind, tt.spec)
+			if tt.wantErr {
+				require.Error(t, err)
+				return
+			}
+			require.NoError(t, err)
+		})
+	}
 }

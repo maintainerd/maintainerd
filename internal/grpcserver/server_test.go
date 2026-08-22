@@ -67,6 +67,14 @@ func (f *fakeAgentRepo) BindAgentSubject(_ context.Context, arg storage.BindAgen
 	f.row.BoundSubject = arg.BoundSubject
 	return f.row, nil
 }
+func (f *fakeAgentRepo) MarkAgentEnrolled(_ context.Context, arg storage.MarkAgentEnrolledParams) (storage.Agent, error) {
+	if arg.AgentUuid != f.row.AgentUuid || f.row.JoinTokenUsedAt.Valid {
+		return storage.Agent{}, pgx.ErrNoRows
+	}
+	f.row.JoinTokenUsedAt = pgtype.Timestamptz{Time: time.Now(), Valid: true}
+	f.row.ClientCertPem = arg.ClientCertPem
+	return f.row, nil
+}
 func (f *fakeAgentRepo) AgentHeartbeat(_ context.Context, id uuid.UUID) (storage.Agent, error) {
 	if id != f.row.AgentUuid {
 		return storage.Agent{}, pgx.ErrNoRows
@@ -83,6 +91,9 @@ type fakeResourceRepo struct {
 
 func (f *fakeResourceRepo) GetProjectByUUID(context.Context, uuid.UUID) (storage.Project, error) {
 	panic("not used")
+}
+func (f *fakeResourceRepo) GetTenantByID(context.Context, int64) (storage.Tenant, error) {
+	return storage.Tenant{TenantID: 1, Name: "acme"}, nil
 }
 func (f *fakeResourceRepo) GetProjectByID(context.Context, int64) (storage.Project, error) {
 	return storage.Project{ProjectID: 1, ProjectUuid: uuid.New()}, nil

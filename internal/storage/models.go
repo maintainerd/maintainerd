@@ -12,22 +12,25 @@ import (
 )
 
 type Agent struct {
-	AgentID      int64              `json:"agent_id"`
-	AgentUuid    uuid.UUID          `json:"agent_uuid"`
-	TenantID     int64              `json:"tenant_id"`
-	Name         string             `json:"name"`
-	Status       string             `json:"status"`
-	Endpoint     string             `json:"endpoint"`
-	Version      string             `json:"version"`
-	Capabilities []byte             `json:"capabilities"`
-	BoundSubject string             `json:"bound_subject"`
-	LastSeenAt   pgtype.Timestamptz `json:"last_seen_at"`
-	Metadata     []byte             `json:"metadata"`
-	CreatedBy    pgtype.Int8        `json:"created_by"`
-	UpdatedBy    pgtype.Int8        `json:"updated_by"`
-	CreatedAt    time.Time          `json:"created_at"`
-	UpdatedAt    time.Time          `json:"updated_at"`
-	DeletedAt    pgtype.Timestamptz `json:"deleted_at"`
+	AgentID         int64              `json:"agent_id"`
+	AgentUuid       uuid.UUID          `json:"agent_uuid"`
+	TenantID        int64              `json:"tenant_id"`
+	Name            string             `json:"name"`
+	Status          string             `json:"status"`
+	Endpoint        string             `json:"endpoint"`
+	Version         string             `json:"version"`
+	Capabilities    []byte             `json:"capabilities"`
+	JoinTokenHash   string             `json:"join_token_hash"`
+	JoinTokenUsedAt pgtype.Timestamptz `json:"join_token_used_at"`
+	ClientCertPem   string             `json:"client_cert_pem"`
+	BoundSubject    string             `json:"bound_subject"`
+	LastSeenAt      pgtype.Timestamptz `json:"last_seen_at"`
+	Metadata        []byte             `json:"metadata"`
+	CreatedBy       pgtype.Int8        `json:"created_by"`
+	UpdatedBy       pgtype.Int8        `json:"updated_by"`
+	CreatedAt       time.Time          `json:"created_at"`
+	UpdatedAt       time.Time          `json:"updated_at"`
+	DeletedAt       pgtype.Timestamptz `json:"deleted_at"`
 }
 
 type ControlPlane struct {
@@ -39,6 +42,21 @@ type ControlPlane struct {
 	SetupCompletedAt     pgtype.Timestamptz `json:"setup_completed_at"`
 	CreatedAt            time.Time          `json:"created_at"`
 	UpdatedAt            time.Time          `json:"updated_at"`
+}
+
+type DeploymentTemplate struct {
+	TemplateID   int64              `json:"template_id"`
+	TemplateUuid uuid.UUID          `json:"template_uuid"`
+	Name         string             `json:"name"`
+	Version      string             `json:"version"`
+	Capability   string             `json:"capability"`
+	Image        string             `json:"image"`
+	Parameters   []byte             `json:"parameters"`
+	Spec         []byte             `json:"spec"`
+	Metadata     []byte             `json:"metadata"`
+	CreatedAt    time.Time          `json:"created_at"`
+	UpdatedAt    time.Time          `json:"updated_at"`
+	DeletedAt    pgtype.Timestamptz `json:"deleted_at"`
 }
 
 type Project struct {
@@ -82,6 +100,11 @@ type Resource struct {
 	ProviderID         pgtype.Int8        `json:"provider_id"`
 	AgentID            pgtype.Int8        `json:"agent_id"`
 	OwnerResourceID    pgtype.Int8        `json:"owner_resource_id"`
+	MrnService         string             `json:"mrn_service"`
+	MrnTenant          string             `json:"mrn_tenant"`
+	MrnProject         string             `json:"mrn_project"`
+	MrnResourceType    string             `json:"mrn_resource_type"`
+	MrnResourcePath    string             `json:"mrn_resource_path"`
 	Kind               string             `json:"kind"`
 	Name               string             `json:"name"`
 	State              string             `json:"state"`

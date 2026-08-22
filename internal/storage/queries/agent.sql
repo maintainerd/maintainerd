@@ -1,6 +1,6 @@
 -- name: CreateAgent :one
-INSERT INTO agents (tenant_id, name, status, endpoint, version, capabilities, metadata)
-VALUES ($1, $2, $3, $4, $5, $6, $7)
+INSERT INTO agents (tenant_id, name, status, endpoint, version, capabilities, metadata, join_token_hash)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
 RETURNING *;
 
 -- name: GetAgentByID :one
@@ -44,4 +44,10 @@ UPDATE agents
 SET bound_subject = $2, updated_at = now()
 WHERE agent_uuid = $1 AND deleted_at IS NULL
   AND (bound_subject = '' OR bound_subject = $2)
+RETURNING *;
+
+-- name: MarkAgentEnrolled :one
+UPDATE agents
+SET join_token_used_at = now(), client_cert_pem = $2, updated_at = now()
+WHERE agent_uuid = $1 AND deleted_at IS NULL AND join_token_used_at IS NULL
 RETURNING *;
