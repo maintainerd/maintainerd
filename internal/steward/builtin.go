@@ -66,6 +66,12 @@ func BuiltinCatalog(aud AudienceResolver) Catalog {
 		// Core cannot import Secret's package — Secret is optional and
 		// independently released — so the two lists are kept in step by review.
 		// When Secret adds an action, add it here in the same change.
+		//
+		// It happened a SECOND time when Secret grew dynamic credentials, transit and
+		// leases: six more actions it enforces, none of them declared here. The symptom
+		// is always controlled-mode-only, which is why standalone testing never catches
+		// it — the feature works perfectly for a developer running auth+secret alone,
+		// and is dead on arrival in every core-provisioned install.
 		api("secret", "Maintainerd Secret API", secretAud, []Permission{
 			// Data plane — acting on secret values.
 			perm("secret:GetSecret", "Reveal a secret value"),
@@ -80,6 +86,19 @@ func BuiltinCatalog(aud AudienceResolver) Catalog {
 			perm("secret:ManageFolder", "Create, move and delete folders, and manage scope imports"),
 			perm("secret:ManageRotation", "Manage rotation policies and webhook endpoints"),
 			perm("secret:ReadAudit", "Read the audit trail"),
+			// Dynamic credentials. Configuring a role decides what every credential
+			// issued from it can do; issuing one is the workload-facing ask. Split on
+			// purpose — see the constants in Secret's permissions package.
+			perm("secret:ManageDynamicRole", "Configure dynamic roles: target, SQL templates and TTLs"),
+			perm("secret:IssueDynamicCredential", "Obtain and revoke an on-demand database credential"),
+			// Transit — encryption as a service. Encrypt and Decrypt are separate so a
+			// write-only workload cannot also read every encrypted column.
+			perm("secret:Encrypt", "Seal a plaintext under a transit key"),
+			perm("secret:Decrypt", "Recover a plaintext from a transit ciphertext token"),
+			perm("secret:ManageTransitKey", "Create, rotate, update and delete transit keys"),
+			// Leases on static secrets. NOT required in order to read a leased secret —
+			// that is still secret:GetSecret.
+			perm("secret:ManageLease", "Set lease policy on a secret and revoke outstanding leases"),
 			perm("secret:Admin", "Full administrative access to Maintainerd Secret"),
 		}),
 		// secret is a pure callee today — it makes no outbound calls, so its policy
