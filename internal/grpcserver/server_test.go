@@ -81,6 +81,12 @@ func (f *fakeAgentRepo) AgentHeartbeat(_ context.Context, id uuid.UUID) (storage
 	}
 	return f.row, nil
 }
+func (f *fakeAgentRepo) MarkStaleAgentsOffline(context.Context, float64) ([]storage.Agent, error) {
+	panic("not used")
+}
+func (f *fakeAgentRepo) ListOfflineAgents(context.Context) ([]storage.Agent, error) {
+	panic("not used")
+}
 func (f *fakeAgentRepo) SoftDeleteAgent(context.Context, uuid.UUID) error { panic("not used") }
 
 type fakeResourceRepo struct {
@@ -123,6 +129,15 @@ func (f *fakeResourceRepo) UpdateResourceStatus(context.Context, storage.UpdateR
 	panic("not used")
 }
 func (f *fakeResourceRepo) ListOutOfSyncResources(context.Context, int32) ([]storage.Resource, error) {
+	panic("not used")
+}
+func (f *fakeResourceRepo) ListSystemTierResources(context.Context) ([]storage.Resource, error) {
+	panic("not used")
+}
+func (f *fakeResourceRepo) RedispatchSystemResource(context.Context, uuid.UUID) (storage.Resource, error) {
+	panic("not used")
+}
+func (f *fakeResourceRepo) FlagResourceHostUnreachable(context.Context, uuid.UUID) (storage.Resource, error) {
 	panic("not used")
 }
 

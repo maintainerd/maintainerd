@@ -6,6 +6,7 @@ import (
 	"github.com/maintainerd/core/internal/agent"
 	"github.com/maintainerd/core/internal/authctrl"
 	"github.com/maintainerd/core/internal/deploytemplate"
+	"github.com/maintainerd/core/internal/event"
 	"github.com/maintainerd/core/internal/project"
 	"github.com/maintainerd/core/internal/provider"
 	"github.com/maintainerd/core/internal/resource"
@@ -26,13 +27,24 @@ type App struct {
 	Provider *provider.Handler
 	Agent    *agent.Handler
 	Resource *resource.Handler
+	Event    *event.Handler
 	Setup    *setup.Handler
 	Steward  *authctrl.Handler
 
 	AgentSvc    *agent.Service
 	ResourceSvc *resource.Service
+	ServiceSvc  *service.Service
 	TemplateSvc *deploytemplate.Service
 	SetupOrch   *setup.Orchestrator
+
+	// EventSvc is the platform escalation log's write side. The supervision loop
+	// holds it; the HTTP surface is read-only.
+	EventSvc *event.Service
+
+	// Catalog is the control-plane desired state. Supervision reads the
+	// availability tier from it, because tier is registration data rather than a
+	// code property (plan/12-supervision-and-availability.md, decision 5).
+	Catalog steward.Catalog
 
 	// StewardRunner converges the control catalog through Auth's regular,
 	// permission-verified RPCs once setup has issued Core its control identity.
@@ -52,9 +64,11 @@ func New(pool *pgxpool.Pool, setupGate setup.Gate) *App {
 	resourceSvc := resource.NewService(q)
 	templateSvc := deploytemplate.NewService(q)
 	serviceSvc := service.NewService(q)
+	eventSvc := event.NewService(q)
 
 	setupCfg := setup.LoadConfig()
 	setupOrch := setup.NewOrchestrator(q, setupCfg)
+	catalog := steward.BuiltinCatalog(setupCfg)
 
 	// The post-setup control path. It shares the setup path's catalog and its
 	// per-service key store: the two transports provision the SAME objects with
@@ -64,7 +78,7 @@ func New(pool *pgxpool.Pool, setupGate setup.Gate) *App {
 	stewardKeys := steward.NewFileKeyStore(setupCfg.StewardKeyDir)
 	stewardRunner := authctrl.NewRunner(
 		authctrl.New(authctrl.LoadConfig(), q),
-		steward.BuiltinCatalog(setupCfg),
+		catalog,
 		stewardKeys,
 		serviceSvc,
 	)
@@ -76,13 +90,17 @@ func New(pool *pgxpool.Pool, setupGate setup.Gate) *App {
 		Provider: provider.NewHandler(provider.NewService(q)),
 		Agent:    agent.NewHandler(agentSvc),
 		Resource: resource.NewHandler(resourceSvc),
+		Event:    event.NewHandler(eventSvc),
 		Setup:    setup.NewHandler(setupOrch, setupGate),
 		Steward:  authctrl.NewHandler(stewardRunner),
 
 		AgentSvc:      agentSvc,
 		ResourceSvc:   resourceSvc,
+		ServiceSvc:    serviceSvc,
 		TemplateSvc:   templateSvc,
 		SetupOrch:     setupOrch,
+		EventSvc:      eventSvc,
+		Catalog:       catalog,
 		StewardRunner: stewardRunner,
 	}
 }

@@ -106,16 +106,85 @@ RETURNING *;
 -- progress; failure paths pass 0 to leave it untouched. `finalize` stamps
 -- deleted_at — the terminal step of the teardown protocol after an agent
 -- reports the workload removed.
+-- `health` is promoted out of the reported status JSON into its own column so
+-- supervision can act on unhealthy-but-running without parsing JSONB: "running"
+-- is not "working" (see 00006_create_resources.sql).
 UPDATE resources
 SET status = $2,
     state = $3,
     observed_generation = GREATEST(observed_generation, $4),
     attempts = $5,
     next_attempt_at = $6,
+    health = sqlc.arg(health),
     leased_until = NULL,
     deleted_at = CASE WHEN sqlc.arg(finalize)::bool THEN now() ELSE deleted_at END,
     updated_at = now()
 WHERE resource_uuid = $1 AND deleted_at IS NULL
+RETURNING *;
+
+-- name: ListSystemTierResources :many
+-- Every system-tier instance, across all tenants and projects — the supervisor's
+-- feed. Availability tier is a REGISTRATION property carried in metadata
+-- (12-supervision-and-availability.md), never inferred from kind or name: the
+-- same image is a must-never-go-down platform component when registered as
+-- system and a disposable tenant workload when it is not.
+--
+-- Unlike the reconciler feed this applies NO lease/backoff/state gates: the
+-- supervisor's whole job is to look at rows the feed has given up on (parked
+-- 'failed', leased to a dead agent) and decide they must run anyway.
+SELECT * FROM resources
+WHERE metadata ->> 'tier' = 'system' AND deleted_at IS NULL
+ORDER BY name ASC;
+
+-- name: RedispatchSystemResource :one
+-- Force a system-tier instance back onto the work feed.
+--
+-- Bumping generation is what re-arms the EXISTING feed (observed_generation now
+-- lags again) rather than inventing a second dispatch path; clearing
+-- leased_until releases a lease held by an agent that will never answer; and
+-- resetting attempts/next_attempt_at is the load-bearing part: the retry budget
+-- exists to stop a poisoned TENANT spec from hot-looping an agent, but a system
+-- service may never be parked as terminally 'failed' — "never goes down"
+-- outranks "stop wasting cycles". System-tier work is therefore retried forever,
+-- with the supervisor's interval as the backoff and an escalation record once a
+-- human is needed.
+--
+-- The state guard is not optional: 'deleting' is an operator-requested teardown,
+-- a DESIRED state, and resurrecting it would turn keep-alive into a service that
+-- cannot be removed. A COMPLETED teardown needs no guard — it stamps deleted_at,
+-- which the WHERE clause already excludes. State 'removed' with deleted_at still
+-- NULL therefore means the workload vanished without anyone asking, which is a
+-- re-dispatch case rather than an exempt one.
+UPDATE resources
+SET generation = generation + 1,
+    state = 'pending',
+    leased_until = NULL,
+    attempts = 0,
+    next_attempt_at = NULL,
+    updated_at = now()
+WHERE resource_uuid = $1 AND deleted_at IS NULL
+  AND state <> 'deleting'
+RETURNING *;
+
+-- name: FlagResourceHostUnreachable :one
+-- Record that the agent owning this resource has gone offline. It writes a
+-- condition and health only — agent_id is deliberately UNTOUCHED: in docker mode
+-- there is no scheduler to reschedule onto and the workload's data may be
+-- host-local, so silently reassigning it would risk a split brain (two hosts
+-- running the same stateful workload) the moment the original host came back.
+-- Surface it, escalate it, let a human or an explicit policy decide.
+--
+-- The COALESCE guard makes it idempotent: the supervisor re-runs every interval,
+-- and re-stamping would churn updated_at (which orders the work feed) and defeat
+-- once-per-episode escalation. No matching row means "already flagged".
+-- The flag clears on its own, because the next real agent report REPLACES status
+-- wholesale (see ApplyAgentReport) — recovery needs no separate unflag path.
+UPDATE resources
+SET status = status || jsonb_build_object('host_unreachable', true, 'host_unreachable_at', to_jsonb(now())),
+    health = 'unknown',
+    updated_at = now()
+WHERE resource_uuid = $1 AND deleted_at IS NULL
+  AND COALESCE(status ->> 'host_unreachable', '') <> 'true'
 RETURNING *;
 
 -- name: MarkResourceDeleting :exec

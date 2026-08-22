@@ -51,6 +51,27 @@ type Catalog struct {
 	Objects []Object
 }
 
+// ServiceTier reports the availability tier the catalog declares for a service
+// principal, and whether the catalog declares that service at all.
+//
+// The second return value matters: the catalog is NOT the complete list of
+// system services. core itself and auth are provisioned by SetupService during
+// the setup window (see BuiltinCatalog), so a caller must be able to tell "the
+// catalog says this is an ordinary app service" from "the catalog has never
+// heard of it" — the first is an explicit opt-out of supervision, the second is
+// merely silence.
+func (c Catalog) ServiceTier(name string) (Tier, bool) {
+	for _, o := range c.Objects {
+		if o.Kind != KindService || o.Metadata.Name != name {
+			continue
+		}
+		if spec, ok := o.Spec.(ServiceSpec); ok {
+			return spec.Tier, true
+		}
+	}
+	return "", false
+}
+
 // ---- specs -----------------------------------------------------------------
 
 // Tier says how core's own service registry should record a capability.

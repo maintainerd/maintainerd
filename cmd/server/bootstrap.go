@@ -25,6 +25,7 @@ import (
 	appserver "github.com/maintainerd/core/internal/server"
 	"github.com/maintainerd/core/internal/setup"
 	"github.com/maintainerd/core/internal/storage"
+	"github.com/maintainerd/core/internal/supervisor"
 )
 
 // run executes the server bootstrap sequence in dependency order. Keep this as
@@ -114,6 +115,29 @@ func run(parent context.Context) error {
 	// retrying and never fatal, because Auth being unreachable (or setup not
 	// having run yet) is an ordinary startup condition.
 	go application.StewardRunner.RunWithRetry(ctx)
+
+	// The availability loop, on every boot: it sweeps agent liveness, flags
+	// system workloads stranded on a dead host, and keeps system services
+	// running — the three things a container restart policy structurally cannot
+	// see (plan/12-supervision-and-availability.md). It is constructed here
+	// rather than in app.New because its thresholds are environment
+	// configuration, the same reason the AgentGateway is. Best-effort and never
+	// fatal: taking Core down because the loop that keeps the platform up had a
+	// bad pass would be self-defeating.
+	go supervisor.New(
+		application.AgentSvc,
+		application.ResourceSvc,
+		application.ServiceSvc,
+		application.EventSvc,
+		application.Catalog,
+		supervisor.Options{
+			Interval:          config.SupervisorInterval,
+			AgentOfflineAfter: config.AgentOfflineAfter,
+			StaleAfter:        config.SupervisorStaleAfter,
+			EscalateAfter:     config.SupervisorEscalateAfter,
+			DeploymentMode:    config.DeploymentMode,
+		},
+	).Run(ctx)
 
 	agentCACertPEM, err := readOptionalFile("AGENT_CA_CERT_FILE", config.AgentCACertFile)
 	if err != nil {

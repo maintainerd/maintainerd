@@ -256,8 +256,14 @@ func (s *Service) RequireSubject(ctx context.Context, id uuid.UUID, subject stri
 	return &a, nil
 }
 
-// Heartbeat marks the agent online and stamps last_seen_at. The agent calls this
-// on its poll interval so Core can detect offline agents.
+// Heartbeat marks the agent online and stamps last_seen_at. The agent beats on
+// its own goroutine and ticker (default every 10s, never blocked by work
+// execution) so Core can detect a host that has gone away.
+//
+// It is also the RECOVERY path: the single UPDATE writes last_seen_at AND forces
+// status back to 'online', so an agent the sweeper marked offline returns to
+// online on its very next beat with no reconciliation step and no window where
+// "seen just now" coexists with "offline".
 func (s *Service) Heartbeat(ctx context.Context, id uuid.UUID) (*Agent, error) {
 	row, err := s.q.AgentHeartbeat(ctx, id)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -272,6 +278,58 @@ func (s *Service) Heartbeat(ctx context.Context, id uuid.UUID) (*Agent, error) {
 	}
 	a := toAgent(row, tenantUUID)
 	return &a, nil
+}
+
+// SweepOffline marks every agent whose last heartbeat is older than staleAfter
+// as 'offline', and returns ONLY the rows it transitioned. An agent that stopped
+// reporting is a host that may be gone; until something writes that down, every
+// agent looks online forever and the workloads stranded on a dead host are
+// invisible.
+//
+// Returning transitions only is what lets the caller escalate once per episode
+// without keeping de-duplication state: a still-offline agent is not returned
+// again on the next sweep.
+//
+// staleAfter must be several missed beats, not one. The agent beats every 10s by
+// default, so the 90s default is nine intervals — comfortably past the three
+// missed beats a transient blip produces, plus slack for a slow round trip. Set
+// it too low and a GC pause flaps the agent offline and back; set it too high
+// and a dead host stays "online" while its system services are down.
+//
+// Tenant resolution is deliberately skipped: the sweep is a platform-wide pass
+// and must not cost one extra query per stale agent.
+func (s *Service) SweepOffline(ctx context.Context, staleAfter time.Duration) ([]Agent, error) {
+	if staleAfter <= 0 {
+		return nil, apperror.NewValidation("staleAfter must be positive")
+	}
+	rows, err := s.q.MarkStaleAgentsOffline(ctx, staleAfter.Seconds())
+	if err != nil {
+		return nil, err
+	}
+	out := make([]Agent, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, toAgent(r, uuid.Nil))
+	}
+	return out, nil
+}
+
+// ListOffline returns every agent CURRENTLY marked offline — the standing set,
+// not just this sweep's transitions.
+//
+// Supervision needs both: transitions decide when to escalate (once per
+// episode), while the standing set decides which workloads are stranded right
+// now. A host that died three intervals ago is still gone, and a resource
+// assigned to it after the transition would never be noticed otherwise.
+func (s *Service) ListOffline(ctx context.Context) ([]Agent, error) {
+	rows, err := s.q.ListOfflineAgents(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]Agent, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, toAgent(r, uuid.Nil))
+	}
+	return out, nil
 }
 
 type EnrollInput struct {

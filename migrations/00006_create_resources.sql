@@ -24,6 +24,14 @@ CREATE TABLE IF NOT EXISTS resources (
     kind                VARCHAR(50) NOT NULL,
     name                VARCHAR(100) NOT NULL,
     state               VARCHAR(20) NOT NULL DEFAULT 'pending',
+    -- Reported health, promoted out of the status JSON into its own queryable
+    -- column because "running" is NOT "working": a workload whose process is up
+    -- while its healthcheck fails is precisely the case supervision must act on,
+    -- and a value buried in JSONB can be neither filtered nor indexed. Values
+    -- mirror the runtime contract (kit runtime.HealthState): '' (nothing
+    -- reported yet), 'none' (no healthcheck configured), 'starting', 'healthy',
+    -- 'unhealthy'.
+    health              VARCHAR(20) NOT NULL DEFAULT '',
     spec                JSONB NOT NULL DEFAULT '{}',
     status              JSONB NOT NULL DEFAULT '{}',
     generation          BIGINT NOT NULL DEFAULT 1,
@@ -63,6 +71,14 @@ CREATE INDEX IF NOT EXISTS idx_resources_out_of_sync ON resources (state)
     WHERE (observed_generation < generation OR state IN ('deleting', 'error')) AND deleted_at IS NULL;
 CREATE INDEX IF NOT EXISTS idx_resources_spec ON resources USING GIN (spec);
 CREATE INDEX IF NOT EXISTS idx_resources_metadata ON resources USING GIN (metadata);
+-- The supervisor's hot query: every system-tier instance, regardless of tenant
+-- or project. Availability tier is a REGISTRATION property stored in metadata
+-- (12-supervision-and-availability.md), so the keep-alive loop looks the tier up
+-- rather than inferring it from kind or name.
+CREATE INDEX IF NOT EXISTS idx_resources_tier ON resources ((metadata ->> 'tier')) WHERE deleted_at IS NULL;
+-- Supervision reads health next to tier; unhealthy-but-running is a first-class
+-- trigger, not a red dot on a dashboard.
+CREATE INDEX IF NOT EXISTS idx_resources_health ON resources (health) WHERE deleted_at IS NULL;
 CREATE INDEX IF NOT EXISTS idx_resources_created_at ON resources (created_at);
 CREATE INDEX IF NOT EXISTS idx_resources_deleted_at ON resources (deleted_at) WHERE deleted_at IS NULL;
 

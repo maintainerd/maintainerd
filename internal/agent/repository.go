@@ -20,5 +20,10 @@ type Repository interface {
 	BindAgentSubject(ctx context.Context, arg storage.BindAgentSubjectParams) (storage.Agent, error)
 	MarkAgentEnrolled(ctx context.Context, arg storage.MarkAgentEnrolledParams) (storage.Agent, error)
 	AgentHeartbeat(ctx context.Context, agentUUID uuid.UUID) (storage.Agent, error)
+	// MarkStaleAgentsOffline is the liveness sweeper's write (see
+	// Service.SweepOffline); it returns only rows it TRANSITIONED to offline.
+	MarkStaleAgentsOffline(ctx context.Context, staleSeconds float64) ([]storage.Agent, error)
+	// ListOfflineAgents is the STANDING offline set (see Service.ListOffline).
+	ListOfflineAgents(ctx context.Context) ([]storage.Agent, error)
 	SoftDeleteAgent(ctx context.Context, agentUUID uuid.UUID) error
 }

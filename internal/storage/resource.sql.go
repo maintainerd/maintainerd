@@ -19,11 +19,12 @@ SET status = $2,
     observed_generation = GREATEST(observed_generation, $4),
     attempts = $5,
     next_attempt_at = $6,
+    health = $7,
     leased_until = NULL,
-    deleted_at = CASE WHEN $7::bool THEN now() ELSE deleted_at END,
+    deleted_at = CASE WHEN $8::bool THEN now() ELSE deleted_at END,
     updated_at = now()
 WHERE resource_uuid = $1 AND deleted_at IS NULL
-RETURNING resource_id, resource_uuid, tenant_id, project_id, provider_id, agent_id, owner_resource_id, mrn_service, mrn_tenant, mrn_project, mrn_resource_type, mrn_resource_path, kind, name, state, spec, status, generation, observed_generation, leased_until, attempts, next_attempt_at, metadata, created_by, updated_by, created_at, updated_at, deleted_at
+RETURNING resource_id, resource_uuid, tenant_id, project_id, provider_id, agent_id, owner_resource_id, mrn_service, mrn_tenant, mrn_project, mrn_resource_type, mrn_resource_path, kind, name, state, health, spec, status, generation, observed_generation, leased_until, attempts, next_attempt_at, metadata, created_by, updated_by, created_at, updated_at, deleted_at
 `
 
 type ApplyAgentReportParams struct {
@@ -33,6 +34,7 @@ type ApplyAgentReportParams struct {
 	ObservedGeneration int64              `json:"observed_generation"`
 	Attempts           int32              `json:"attempts"`
 	NextAttemptAt      pgtype.Timestamptz `json:"next_attempt_at"`
+	Health             string             `json:"health"`
 	Finalize           bool               `json:"finalize"`
 }
 
@@ -44,6 +46,9 @@ type ApplyAgentReportParams struct {
 // progress; failure paths pass 0 to leave it untouched. `finalize` stamps
 // deleted_at — the terminal step of the teardown protocol after an agent
 // reports the workload removed.
+// `health` is promoted out of the reported status JSON into its own column so
+// supervision can act on unhealthy-but-running without parsing JSONB: "running"
+// is not "working" (see 00006_create_resources.sql).
 func (q *Queries) ApplyAgentReport(ctx context.Context, arg ApplyAgentReportParams) (Resource, error) {
 	row := q.db.QueryRow(ctx, applyAgentReport,
 		arg.ResourceUuid,
@@ -52,6 +57,7 @@ func (q *Queries) ApplyAgentReport(ctx context.Context, arg ApplyAgentReportPara
 		arg.ObservedGeneration,
 		arg.Attempts,
 		arg.NextAttemptAt,
+		arg.Health,
 		arg.Finalize,
 	)
 	var i Resource
@@ -71,6 +77,7 @@ func (q *Queries) ApplyAgentReport(ctx context.Context, arg ApplyAgentReportPara
 		&i.Kind,
 		&i.Name,
 		&i.State,
+		&i.Health,
 		&i.Spec,
 		&i.Status,
 		&i.Generation,
@@ -92,7 +99,7 @@ const assignResourceAgent = `-- name: AssignResourceAgent :one
 UPDATE resources
 SET agent_id = $2, updated_at = now()
 WHERE resource_uuid = $1 AND deleted_at IS NULL
-RETURNING resource_id, resource_uuid, tenant_id, project_id, provider_id, agent_id, owner_resource_id, mrn_service, mrn_tenant, mrn_project, mrn_resource_type, mrn_resource_path, kind, name, state, spec, status, generation, observed_generation, leased_until, attempts, next_attempt_at, metadata, created_by, updated_by, created_at, updated_at, deleted_at
+RETURNING resource_id, resource_uuid, tenant_id, project_id, provider_id, agent_id, owner_resource_id, mrn_service, mrn_tenant, mrn_project, mrn_resource_type, mrn_resource_path, kind, name, state, health, spec, status, generation, observed_generation, leased_until, attempts, next_attempt_at, metadata, created_by, updated_by, created_at, updated_at, deleted_at
 `
 
 type AssignResourceAgentParams struct {
@@ -119,6 +126,7 @@ func (q *Queries) AssignResourceAgent(ctx context.Context, arg AssignResourceAge
 		&i.Kind,
 		&i.Name,
 		&i.State,
+		&i.Health,
 		&i.Spec,
 		&i.Status,
 		&i.Generation,
@@ -153,7 +161,7 @@ WHERE resource_id IN (
     LIMIT $3
     FOR UPDATE SKIP LOCKED
 )
-RETURNING resource_id, resource_uuid, tenant_id, project_id, provider_id, agent_id, owner_resource_id, mrn_service, mrn_tenant, mrn_project, mrn_resource_type, mrn_resource_path, kind, name, state, spec, status, generation, observed_generation, leased_until, attempts, next_attempt_at, metadata, created_by, updated_by, created_at, updated_at, deleted_at
+RETURNING resource_id, resource_uuid, tenant_id, project_id, provider_id, agent_id, owner_resource_id, mrn_service, mrn_tenant, mrn_project, mrn_resource_type, mrn_resource_path, kind, name, state, health, spec, status, generation, observed_generation, leased_until, attempts, next_attempt_at, metadata, created_by, updated_by, created_at, updated_at, deleted_at
 `
 
 type ClaimAgentWorkParams struct {
@@ -193,6 +201,7 @@ func (q *Queries) ClaimAgentWork(ctx context.Context, arg ClaimAgentWorkParams) 
 			&i.Kind,
 			&i.Name,
 			&i.State,
+			&i.Health,
 			&i.Spec,
 			&i.Status,
 			&i.Generation,
@@ -235,7 +244,7 @@ INSERT INTO resources (
     kind, name, spec, metadata
 )
 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
-RETURNING resource_id, resource_uuid, tenant_id, project_id, provider_id, agent_id, owner_resource_id, mrn_service, mrn_tenant, mrn_project, mrn_resource_type, mrn_resource_path, kind, name, state, spec, status, generation, observed_generation, leased_until, attempts, next_attempt_at, metadata, created_by, updated_by, created_at, updated_at, deleted_at
+RETURNING resource_id, resource_uuid, tenant_id, project_id, provider_id, agent_id, owner_resource_id, mrn_service, mrn_tenant, mrn_project, mrn_resource_type, mrn_resource_path, kind, name, state, health, spec, status, generation, observed_generation, leased_until, attempts, next_attempt_at, metadata, created_by, updated_by, created_at, updated_at, deleted_at
 `
 
 type CreateResourceParams struct {
@@ -289,6 +298,66 @@ func (q *Queries) CreateResource(ctx context.Context, arg CreateResourceParams) 
 		&i.Kind,
 		&i.Name,
 		&i.State,
+		&i.Health,
+		&i.Spec,
+		&i.Status,
+		&i.Generation,
+		&i.ObservedGeneration,
+		&i.LeasedUntil,
+		&i.Attempts,
+		&i.NextAttemptAt,
+		&i.Metadata,
+		&i.CreatedBy,
+		&i.UpdatedBy,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.DeletedAt,
+	)
+	return i, err
+}
+
+const flagResourceHostUnreachable = `-- name: FlagResourceHostUnreachable :one
+UPDATE resources
+SET status = status || jsonb_build_object('host_unreachable', true, 'host_unreachable_at', to_jsonb(now())),
+    health = 'unknown',
+    updated_at = now()
+WHERE resource_uuid = $1 AND deleted_at IS NULL
+  AND COALESCE(status ->> 'host_unreachable', '') <> 'true'
+RETURNING resource_id, resource_uuid, tenant_id, project_id, provider_id, agent_id, owner_resource_id, mrn_service, mrn_tenant, mrn_project, mrn_resource_type, mrn_resource_path, kind, name, state, health, spec, status, generation, observed_generation, leased_until, attempts, next_attempt_at, metadata, created_by, updated_by, created_at, updated_at, deleted_at
+`
+
+// Record that the agent owning this resource has gone offline. It writes a
+// condition and health only — agent_id is deliberately UNTOUCHED: in docker mode
+// there is no scheduler to reschedule onto and the workload's data may be
+// host-local, so silently reassigning it would risk a split brain (two hosts
+// running the same stateful workload) the moment the original host came back.
+// Surface it, escalate it, let a human or an explicit policy decide.
+//
+// The COALESCE guard makes it idempotent: the supervisor re-runs every interval,
+// and re-stamping would churn updated_at (which orders the work feed) and defeat
+// once-per-episode escalation. No matching row means "already flagged".
+// The flag clears on its own, because the next real agent report REPLACES status
+// wholesale (see ApplyAgentReport) — recovery needs no separate unflag path.
+func (q *Queries) FlagResourceHostUnreachable(ctx context.Context, resourceUuid uuid.UUID) (Resource, error) {
+	row := q.db.QueryRow(ctx, flagResourceHostUnreachable, resourceUuid)
+	var i Resource
+	err := row.Scan(
+		&i.ResourceID,
+		&i.ResourceUuid,
+		&i.TenantID,
+		&i.ProjectID,
+		&i.ProviderID,
+		&i.AgentID,
+		&i.OwnerResourceID,
+		&i.MrnService,
+		&i.MrnTenant,
+		&i.MrnProject,
+		&i.MrnResourceType,
+		&i.MrnResourcePath,
+		&i.Kind,
+		&i.Name,
+		&i.State,
+		&i.Health,
 		&i.Spec,
 		&i.Status,
 		&i.Generation,
@@ -307,7 +376,7 @@ func (q *Queries) CreateResource(ctx context.Context, arg CreateResourceParams) 
 }
 
 const getResourceByID = `-- name: GetResourceByID :one
-SELECT resource_id, resource_uuid, tenant_id, project_id, provider_id, agent_id, owner_resource_id, mrn_service, mrn_tenant, mrn_project, mrn_resource_type, mrn_resource_path, kind, name, state, spec, status, generation, observed_generation, leased_until, attempts, next_attempt_at, metadata, created_by, updated_by, created_at, updated_at, deleted_at FROM resources WHERE resource_id = $1 AND deleted_at IS NULL
+SELECT resource_id, resource_uuid, tenant_id, project_id, provider_id, agent_id, owner_resource_id, mrn_service, mrn_tenant, mrn_project, mrn_resource_type, mrn_resource_path, kind, name, state, health, spec, status, generation, observed_generation, leased_until, attempts, next_attempt_at, metadata, created_by, updated_by, created_at, updated_at, deleted_at FROM resources WHERE resource_id = $1 AND deleted_at IS NULL
 `
 
 func (q *Queries) GetResourceByID(ctx context.Context, resourceID int64) (Resource, error) {
@@ -329,6 +398,7 @@ func (q *Queries) GetResourceByID(ctx context.Context, resourceID int64) (Resour
 		&i.Kind,
 		&i.Name,
 		&i.State,
+		&i.Health,
 		&i.Spec,
 		&i.Status,
 		&i.Generation,
@@ -347,7 +417,7 @@ func (q *Queries) GetResourceByID(ctx context.Context, resourceID int64) (Resour
 }
 
 const getResourceByUUID = `-- name: GetResourceByUUID :one
-SELECT resource_id, resource_uuid, tenant_id, project_id, provider_id, agent_id, owner_resource_id, mrn_service, mrn_tenant, mrn_project, mrn_resource_type, mrn_resource_path, kind, name, state, spec, status, generation, observed_generation, leased_until, attempts, next_attempt_at, metadata, created_by, updated_by, created_at, updated_at, deleted_at FROM resources WHERE resource_uuid = $1 AND deleted_at IS NULL
+SELECT resource_id, resource_uuid, tenant_id, project_id, provider_id, agent_id, owner_resource_id, mrn_service, mrn_tenant, mrn_project, mrn_resource_type, mrn_resource_path, kind, name, state, health, spec, status, generation, observed_generation, leased_until, attempts, next_attempt_at, metadata, created_by, updated_by, created_at, updated_at, deleted_at FROM resources WHERE resource_uuid = $1 AND deleted_at IS NULL
 `
 
 func (q *Queries) GetResourceByUUID(ctx context.Context, resourceUuid uuid.UUID) (Resource, error) {
@@ -369,6 +439,7 @@ func (q *Queries) GetResourceByUUID(ctx context.Context, resourceUuid uuid.UUID)
 		&i.Kind,
 		&i.Name,
 		&i.State,
+		&i.Health,
 		&i.Spec,
 		&i.Status,
 		&i.Generation,
@@ -387,7 +458,7 @@ func (q *Queries) GetResourceByUUID(ctx context.Context, resourceUuid uuid.UUID)
 }
 
 const listOutOfSyncResources = `-- name: ListOutOfSyncResources :many
-SELECT resource_id, resource_uuid, tenant_id, project_id, provider_id, agent_id, owner_resource_id, mrn_service, mrn_tenant, mrn_project, mrn_resource_type, mrn_resource_path, kind, name, state, spec, status, generation, observed_generation, leased_until, attempts, next_attempt_at, metadata, created_by, updated_by, created_at, updated_at, deleted_at FROM resources
+SELECT resource_id, resource_uuid, tenant_id, project_id, provider_id, agent_id, owner_resource_id, mrn_service, mrn_tenant, mrn_project, mrn_resource_type, mrn_resource_path, kind, name, state, health, spec, status, generation, observed_generation, leased_until, attempts, next_attempt_at, metadata, created_by, updated_by, created_at, updated_at, deleted_at FROM resources
 WHERE (observed_generation < generation OR state IN ('deleting', 'error'))
   AND state <> 'failed'
   AND deleted_at IS NULL
@@ -429,6 +500,7 @@ func (q *Queries) ListOutOfSyncResources(ctx context.Context, limit int32) ([]Re
 			&i.Kind,
 			&i.Name,
 			&i.State,
+			&i.Health,
 			&i.Spec,
 			&i.Status,
 			&i.Generation,
@@ -454,7 +526,7 @@ func (q *Queries) ListOutOfSyncResources(ctx context.Context, limit int32) ([]Re
 }
 
 const listResourcesByProject = `-- name: ListResourcesByProject :many
-SELECT resource_id, resource_uuid, tenant_id, project_id, provider_id, agent_id, owner_resource_id, mrn_service, mrn_tenant, mrn_project, mrn_resource_type, mrn_resource_path, kind, name, state, spec, status, generation, observed_generation, leased_until, attempts, next_attempt_at, metadata, created_by, updated_by, created_at, updated_at, deleted_at FROM resources
+SELECT resource_id, resource_uuid, tenant_id, project_id, provider_id, agent_id, owner_resource_id, mrn_service, mrn_tenant, mrn_project, mrn_resource_type, mrn_resource_path, kind, name, state, health, spec, status, generation, observed_generation, leased_until, attempts, next_attempt_at, metadata, created_by, updated_by, created_at, updated_at, deleted_at FROM resources
 WHERE project_id = $1 AND deleted_at IS NULL
 ORDER BY created_at DESC
 LIMIT $2 OFFSET $3
@@ -491,6 +563,7 @@ func (q *Queries) ListResourcesByProject(ctx context.Context, arg ListResourcesB
 			&i.Kind,
 			&i.Name,
 			&i.State,
+			&i.Health,
 			&i.Spec,
 			&i.Status,
 			&i.Generation,
@@ -516,7 +589,7 @@ func (q *Queries) ListResourcesByProject(ctx context.Context, arg ListResourcesB
 }
 
 const listResourcesByTenant = `-- name: ListResourcesByTenant :many
-SELECT resource_id, resource_uuid, tenant_id, project_id, provider_id, agent_id, owner_resource_id, mrn_service, mrn_tenant, mrn_project, mrn_resource_type, mrn_resource_path, kind, name, state, spec, status, generation, observed_generation, leased_until, attempts, next_attempt_at, metadata, created_by, updated_by, created_at, updated_at, deleted_at FROM resources
+SELECT resource_id, resource_uuid, tenant_id, project_id, provider_id, agent_id, owner_resource_id, mrn_service, mrn_tenant, mrn_project, mrn_resource_type, mrn_resource_path, kind, name, state, health, spec, status, generation, observed_generation, leased_until, attempts, next_attempt_at, metadata, created_by, updated_by, created_at, updated_at, deleted_at FROM resources
 WHERE tenant_id = $1 AND deleted_at IS NULL
 ORDER BY created_at DESC
 LIMIT $2 OFFSET $3
@@ -553,6 +626,72 @@ func (q *Queries) ListResourcesByTenant(ctx context.Context, arg ListResourcesBy
 			&i.Kind,
 			&i.Name,
 			&i.State,
+			&i.Health,
+			&i.Spec,
+			&i.Status,
+			&i.Generation,
+			&i.ObservedGeneration,
+			&i.LeasedUntil,
+			&i.Attempts,
+			&i.NextAttemptAt,
+			&i.Metadata,
+			&i.CreatedBy,
+			&i.UpdatedBy,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.DeletedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listSystemTierResources = `-- name: ListSystemTierResources :many
+SELECT resource_id, resource_uuid, tenant_id, project_id, provider_id, agent_id, owner_resource_id, mrn_service, mrn_tenant, mrn_project, mrn_resource_type, mrn_resource_path, kind, name, state, health, spec, status, generation, observed_generation, leased_until, attempts, next_attempt_at, metadata, created_by, updated_by, created_at, updated_at, deleted_at FROM resources
+WHERE metadata ->> 'tier' = 'system' AND deleted_at IS NULL
+ORDER BY name ASC
+`
+
+// Every system-tier instance, across all tenants and projects — the supervisor's
+// feed. Availability tier is a REGISTRATION property carried in metadata
+// (12-supervision-and-availability.md), never inferred from kind or name: the
+// same image is a must-never-go-down platform component when registered as
+// system and a disposable tenant workload when it is not.
+//
+// Unlike the reconciler feed this applies NO lease/backoff/state gates: the
+// supervisor's whole job is to look at rows the feed has given up on (parked
+// 'failed', leased to a dead agent) and decide they must run anyway.
+func (q *Queries) ListSystemTierResources(ctx context.Context) ([]Resource, error) {
+	rows, err := q.db.Query(ctx, listSystemTierResources)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []Resource{}
+	for rows.Next() {
+		var i Resource
+		if err := rows.Scan(
+			&i.ResourceID,
+			&i.ResourceUuid,
+			&i.TenantID,
+			&i.ProjectID,
+			&i.ProviderID,
+			&i.AgentID,
+			&i.OwnerResourceID,
+			&i.MrnService,
+			&i.MrnTenant,
+			&i.MrnProject,
+			&i.MrnResourceType,
+			&i.MrnResourcePath,
+			&i.Kind,
+			&i.Name,
+			&i.State,
+			&i.Health,
 			&i.Spec,
 			&i.Status,
 			&i.Generation,
@@ -592,6 +731,74 @@ func (q *Queries) MarkResourceDeleting(ctx context.Context, resourceUuid uuid.UU
 	return err
 }
 
+const redispatchSystemResource = `-- name: RedispatchSystemResource :one
+UPDATE resources
+SET generation = generation + 1,
+    state = 'pending',
+    leased_until = NULL,
+    attempts = 0,
+    next_attempt_at = NULL,
+    updated_at = now()
+WHERE resource_uuid = $1 AND deleted_at IS NULL
+  AND state <> 'deleting'
+RETURNING resource_id, resource_uuid, tenant_id, project_id, provider_id, agent_id, owner_resource_id, mrn_service, mrn_tenant, mrn_project, mrn_resource_type, mrn_resource_path, kind, name, state, health, spec, status, generation, observed_generation, leased_until, attempts, next_attempt_at, metadata, created_by, updated_by, created_at, updated_at, deleted_at
+`
+
+// Force a system-tier instance back onto the work feed.
+//
+// Bumping generation is what re-arms the EXISTING feed (observed_generation now
+// lags again) rather than inventing a second dispatch path; clearing
+// leased_until releases a lease held by an agent that will never answer; and
+// resetting attempts/next_attempt_at is the load-bearing part: the retry budget
+// exists to stop a poisoned TENANT spec from hot-looping an agent, but a system
+// service may never be parked as terminally 'failed' — "never goes down"
+// outranks "stop wasting cycles". System-tier work is therefore retried forever,
+// with the supervisor's interval as the backoff and an escalation record once a
+// human is needed.
+//
+// The state guard is not optional: 'deleting' is an operator-requested teardown,
+// a DESIRED state, and resurrecting it would turn keep-alive into a service that
+// cannot be removed. A COMPLETED teardown needs no guard — it stamps deleted_at,
+// which the WHERE clause already excludes. State 'removed' with deleted_at still
+// NULL therefore means the workload vanished without anyone asking, which is a
+// re-dispatch case rather than an exempt one.
+func (q *Queries) RedispatchSystemResource(ctx context.Context, resourceUuid uuid.UUID) (Resource, error) {
+	row := q.db.QueryRow(ctx, redispatchSystemResource, resourceUuid)
+	var i Resource
+	err := row.Scan(
+		&i.ResourceID,
+		&i.ResourceUuid,
+		&i.TenantID,
+		&i.ProjectID,
+		&i.ProviderID,
+		&i.AgentID,
+		&i.OwnerResourceID,
+		&i.MrnService,
+		&i.MrnTenant,
+		&i.MrnProject,
+		&i.MrnResourceType,
+		&i.MrnResourcePath,
+		&i.Kind,
+		&i.Name,
+		&i.State,
+		&i.Health,
+		&i.Spec,
+		&i.Status,
+		&i.Generation,
+		&i.ObservedGeneration,
+		&i.LeasedUntil,
+		&i.Attempts,
+		&i.NextAttemptAt,
+		&i.Metadata,
+		&i.CreatedBy,
+		&i.UpdatedBy,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.DeletedAt,
+	)
+	return i, err
+}
+
 const updateResourceSpec = `-- name: UpdateResourceSpec :one
 UPDATE resources
 SET spec = $2, metadata = $3,
@@ -599,7 +806,7 @@ SET spec = $2, metadata = $3,
     generation = generation + 1, state = 'pending',
     attempts = 0, next_attempt_at = NULL, updated_at = now()
 WHERE resource_uuid = $1 AND deleted_at IS NULL
-RETURNING resource_id, resource_uuid, tenant_id, project_id, provider_id, agent_id, owner_resource_id, mrn_service, mrn_tenant, mrn_project, mrn_resource_type, mrn_resource_path, kind, name, state, spec, status, generation, observed_generation, leased_until, attempts, next_attempt_at, metadata, created_by, updated_by, created_at, updated_at, deleted_at
+RETURNING resource_id, resource_uuid, tenant_id, project_id, provider_id, agent_id, owner_resource_id, mrn_service, mrn_tenant, mrn_project, mrn_resource_type, mrn_resource_path, kind, name, state, health, spec, status, generation, observed_generation, leased_until, attempts, next_attempt_at, metadata, created_by, updated_by, created_at, updated_at, deleted_at
 `
 
 type UpdateResourceSpecParams struct {
@@ -646,6 +853,7 @@ func (q *Queries) UpdateResourceSpec(ctx context.Context, arg UpdateResourceSpec
 		&i.Kind,
 		&i.Name,
 		&i.State,
+		&i.Health,
 		&i.Spec,
 		&i.Status,
 		&i.Generation,
@@ -667,7 +875,7 @@ const updateResourceStatus = `-- name: UpdateResourceStatus :one
 UPDATE resources
 SET status = $2, state = $3, observed_generation = $4, updated_at = now()
 WHERE resource_uuid = $1 AND deleted_at IS NULL
-RETURNING resource_id, resource_uuid, tenant_id, project_id, provider_id, agent_id, owner_resource_id, mrn_service, mrn_tenant, mrn_project, mrn_resource_type, mrn_resource_path, kind, name, state, spec, status, generation, observed_generation, leased_until, attempts, next_attempt_at, metadata, created_by, updated_by, created_at, updated_at, deleted_at
+RETURNING resource_id, resource_uuid, tenant_id, project_id, provider_id, agent_id, owner_resource_id, mrn_service, mrn_tenant, mrn_project, mrn_resource_type, mrn_resource_path, kind, name, state, health, spec, status, generation, observed_generation, leased_until, attempts, next_attempt_at, metadata, created_by, updated_by, created_at, updated_at, deleted_at
 `
 
 type UpdateResourceStatusParams struct {
@@ -702,6 +910,7 @@ func (q *Queries) UpdateResourceStatus(ctx context.Context, arg UpdateResourceSt
 		&i.Kind,
 		&i.Name,
 		&i.State,
+		&i.Health,
 		&i.Spec,
 		&i.Status,
 		&i.Generation,

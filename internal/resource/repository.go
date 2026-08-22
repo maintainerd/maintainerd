@@ -25,4 +25,9 @@ type Repository interface {
 	ClaimAgentWork(ctx context.Context, arg storage.ClaimAgentWorkParams) ([]storage.Resource, error)
 	ApplyAgentReport(ctx context.Context, arg storage.ApplyAgentReportParams) (storage.Resource, error)
 	MarkResourceDeleting(ctx context.Context, resourceUUID uuid.UUID) error
+	// The supervision surface (see internal/supervisor): the system-tier feed
+	// plus the two writes keep-alive is allowed to make.
+	ListSystemTierResources(ctx context.Context) ([]storage.Resource, error)
+	RedispatchSystemResource(ctx context.Context, resourceUUID uuid.UUID) (storage.Resource, error)
+	FlagResourceHostUnreachable(ctx context.Context, resourceUUID uuid.UUID) (storage.Resource, error)
 }

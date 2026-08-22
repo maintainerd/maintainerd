@@ -18,6 +18,11 @@ WHERE agent_uuid = $1 AND deleted_at IS NULL
 RETURNING agent_id, agent_uuid, tenant_id, name, status, endpoint, version, capabilities, join_token_hash, join_token_used_at, client_cert_pem, bound_subject, last_seen_at, metadata, created_by, updated_by, created_at, updated_at, deleted_at
 `
 
+// The liveness write, and also the RECOVERY path: it stamps last_seen_at AND
+// forces status back to 'online', so an agent the sweeper marked 'offline'
+// returns to online on its very next beat with no extra reconciliation. The two
+// writes belong in one statement precisely so "seen" and "online" can never
+// disagree.
 func (q *Queries) AgentHeartbeat(ctx context.Context, agentUuid uuid.UUID) (Agent, error) {
 	row := q.db.QueryRow(ctx, agentHeartbeat, agentUuid)
 	var i Agent
@@ -269,6 +274,56 @@ func (q *Queries) ListAgentsByTenant(ctx context.Context, arg ListAgentsByTenant
 	return items, nil
 }
 
+const listOfflineAgents = `-- name: ListOfflineAgents :many
+SELECT agent_id, agent_uuid, tenant_id, name, status, endpoint, version, capabilities, join_token_hash, join_token_used_at, client_cert_pem, bound_subject, last_seen_at, metadata, created_by, updated_by, created_at, updated_at, deleted_at FROM agents
+WHERE status = 'offline' AND deleted_at IS NULL
+ORDER BY last_seen_at ASC NULLS LAST
+`
+
+// Every agent CURRENTLY considered offline, not just the ones this sweep
+// transitioned. Supervision needs the standing set: a workload assigned to a
+// host that died three ticks ago is still stranded, and a resource created or
+// reassigned after the transition would otherwise never be noticed.
+func (q *Queries) ListOfflineAgents(ctx context.Context) ([]Agent, error) {
+	rows, err := q.db.Query(ctx, listOfflineAgents)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []Agent{}
+	for rows.Next() {
+		var i Agent
+		if err := rows.Scan(
+			&i.AgentID,
+			&i.AgentUuid,
+			&i.TenantID,
+			&i.Name,
+			&i.Status,
+			&i.Endpoint,
+			&i.Version,
+			&i.Capabilities,
+			&i.JoinTokenHash,
+			&i.JoinTokenUsedAt,
+			&i.ClientCertPem,
+			&i.BoundSubject,
+			&i.LastSeenAt,
+			&i.Metadata,
+			&i.CreatedBy,
+			&i.UpdatedBy,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.DeletedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const markAgentEnrolled = `-- name: MarkAgentEnrolled :one
 UPDATE agents
 SET join_token_used_at = now(), client_cert_pem = $2, updated_at = now()
@@ -306,6 +361,67 @@ func (q *Queries) MarkAgentEnrolled(ctx context.Context, arg MarkAgentEnrolledPa
 		&i.DeletedAt,
 	)
 	return i, err
+}
+
+const markStaleAgentsOffline = `-- name: MarkStaleAgentsOffline :many
+UPDATE agents
+SET status = 'offline', updated_at = now()
+WHERE deleted_at IS NULL
+  AND status <> 'offline'
+  AND last_seen_at IS NOT NULL
+  AND last_seen_at < now() - make_interval(secs => $1::float8)
+RETURNING agent_id, agent_uuid, tenant_id, name, status, endpoint, version, capabilities, join_token_hash, join_token_used_at, client_cert_pem, bound_subject, last_seen_at, metadata, created_by, updated_by, created_at, updated_at, deleted_at
+`
+
+// The liveness sweeper. An agent that stopped beating is a host that may be
+// gone, and until something writes that down every agent looks online forever
+// (last_seen_at was previously written and read by nothing).
+//
+// Scope is deliberately narrow:
+//   - status <> 'offline' — only TRANSITIONS are returned, which is what makes
+//     the caller's "emit one escalation per episode" free instead of requiring
+//     de-duplication state.
+//   - last_seen_at IS NOT NULL — an agent that has never checked in was never
+//     online, so calling it 'offline' would overwrite the more precise truth
+//     ('pending': created but not yet enrolled/registered).
+func (q *Queries) MarkStaleAgentsOffline(ctx context.Context, staleSeconds float64) ([]Agent, error) {
+	rows, err := q.db.Query(ctx, markStaleAgentsOffline, staleSeconds)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []Agent{}
+	for rows.Next() {
+		var i Agent
+		if err := rows.Scan(
+			&i.AgentID,
+			&i.AgentUuid,
+			&i.TenantID,
+			&i.Name,
+			&i.Status,
+			&i.Endpoint,
+			&i.Version,
+			&i.Capabilities,
+			&i.JoinTokenHash,
+			&i.JoinTokenUsedAt,
+			&i.ClientCertPem,
+			&i.BoundSubject,
+			&i.LastSeenAt,
+			&i.Metadata,
+			&i.CreatedBy,
+			&i.UpdatedBy,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.DeletedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const softDeleteAgent = `-- name: SoftDeleteAgent :exec

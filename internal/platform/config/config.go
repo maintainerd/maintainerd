@@ -83,6 +83,40 @@ var (
 	// until its spec changes.
 	GatewayAttemptBudget int
 
+	// --- Supervision (internal/supervisor) -------------------------------
+	// The availability loop that makes "system services must never go down"
+	// real. All four are safe to leave unset; the documented defaults are the
+	// intended posture and every value is validated rather than defaulted on a
+	// typo, because a mis-parsed threshold silently disables supervision.
+
+	// SupervisorInterval (SUPERVISOR_INTERVAL, default 15s) is how often a
+	// supervision pass runs (liveness sweep, stranded-workload flagging,
+	// system-service keep-alive).
+	SupervisorInterval time.Duration
+
+	// AgentOfflineAfter (AGENT_OFFLINE_AFTER, default 90s) is how long an agent
+	// may go without a heartbeat before Core marks it offline. The agent beats
+	// every 10s on a goroutine work execution cannot block, so the default is
+	// nine intervals — well past the three missed beats a transient blip
+	// produces, plus slack. Too low and a GC pause flaps the agent offline and
+	// back; too high and a dead host reads as online while its services are
+	// down.
+	AgentOfflineAfter time.Duration
+
+	// SupervisorStaleAfter (SUPERVISOR_STALE_AFTER, default 5m) is how long a
+	// system-tier instance may sit out-of-sync — dispatched and silent, or never
+	// picked up — before keep-alive re-dispatches it. Keep it above LEASE_TTL
+	// plus a realistic image pull, or supervision re-dispatches work that is
+	// merely slow.
+	SupervisorStaleAfter time.Duration
+
+	// SupervisorEscalateAfter (SUPERVISOR_ESCALATE_AFTER, default 5) is how many
+	// CONSECUTIVE re-dispatches a system service may take without reaching
+	// healthy before Core writes an escalation record (platform_events).
+	// Re-dispatch continues forever afterwards: escalation means "a human is
+	// needed", never "stop trying".
+	SupervisorEscalateAfter int
+
 	// Agent enrollment CA. AgentGateway.Enroll signs the agent's CSR with this
 	// CA after validating the one-time join token; non-enrollment RPCs can then
 	// require a client cert chained to GRPC_CLIENT_CA_FILE.
@@ -276,6 +310,32 @@ func Init() error {
 	if GatewayAttemptBudget < 1 {
 		return fmt.Errorf("ATTEMPT_BUDGET must be at least 1 (got %d)", GatewayAttemptBudget)
 	}
+	// Supervision thresholds. Validated, never defaulted-on-typo: a supervision
+	// interval silently read as zero would stop the loop that keeps the platform
+	// alive, which is the one failure that must not be quiet.
+	if SupervisorInterval, err = time.ParseDuration(GetEnvOrDefault("SUPERVISOR_INTERVAL", "15s")); err != nil {
+		return fmt.Errorf("SUPERVISOR_INTERVAL is not a valid duration: %w", err)
+	}
+	if SupervisorInterval <= 0 {
+		return fmt.Errorf("SUPERVISOR_INTERVAL must be positive (got %s)", SupervisorInterval)
+	}
+	if AgentOfflineAfter, err = time.ParseDuration(GetEnvOrDefault("AGENT_OFFLINE_AFTER", "90s")); err != nil {
+		return fmt.Errorf("AGENT_OFFLINE_AFTER is not a valid duration: %w", err)
+	}
+	if AgentOfflineAfter <= 0 {
+		return fmt.Errorf("AGENT_OFFLINE_AFTER must be positive (got %s)", AgentOfflineAfter)
+	}
+	if SupervisorStaleAfter, err = time.ParseDuration(GetEnvOrDefault("SUPERVISOR_STALE_AFTER", "5m")); err != nil {
+		return fmt.Errorf("SUPERVISOR_STALE_AFTER is not a valid duration: %w", err)
+	}
+	if SupervisorStaleAfter <= 0 {
+		return fmt.Errorf("SUPERVISOR_STALE_AFTER must be positive (got %s)", SupervisorStaleAfter)
+	}
+	SupervisorEscalateAfter = parseIntDefault(GetEnvOrDefault("SUPERVISOR_ESCALATE_AFTER", "5"), 5)
+	if SupervisorEscalateAfter < 1 {
+		return fmt.Errorf("SUPERVISOR_ESCALATE_AFTER must be at least 1 (got %d)", SupervisorEscalateAfter)
+	}
+
 	AgentCACertFile = GetEnvOrDefault("AGENT_CA_CERT_FILE", "")
 	AgentCAKeyFile = GetEnvOrDefault("AGENT_CA_KEY_FILE", "")
 	if AgentCertTTL, err = time.ParseDuration(GetEnvOrDefault("AGENT_CERT_TTL", "24h")); err != nil {

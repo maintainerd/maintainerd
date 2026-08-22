@@ -11,6 +11,11 @@ import (
 )
 
 type Querier interface {
+	// The liveness write, and also the RECOVERY path: it stamps last_seen_at AND
+	// forces status back to 'online', so an agent the sweeper marked 'offline'
+	// returns to online on its very next beat with no extra reconciliation. The two
+	// writes belong in one statement precisely so "seen" and "online" can never
+	// disagree.
 	AgentHeartbeat(ctx context.Context, agentUuid uuid.UUID) (Agent, error)
 	// The gateway's single write path for agent status reports. The service layer
 	// computes the resulting state / attempts / backoff in Go; this statement
@@ -20,6 +25,9 @@ type Querier interface {
 	// progress; failure paths pass 0 to leave it untouched. `finalize` stamps
 	// deleted_at — the terminal step of the teardown protocol after an agent
 	// reports the workload removed.
+	// `health` is promoted out of the reported status JSON into its own column so
+	// supervision can act on unhealthy-but-running without parsing JSONB: "running"
+	// is not "working" (see 00006_create_resources.sql).
 	ApplyAgentReport(ctx context.Context, arg ApplyAgentReportParams) (Resource, error)
 	AssignResourceAgent(ctx context.Context, arg AssignResourceAgentParams) (Resource, error)
 	// First authenticated Register wins: binds the verified token subject to the
@@ -37,6 +45,7 @@ type Querier interface {
 	ClaimAgentWork(ctx context.Context, arg ClaimAgentWorkParams) ([]Resource, error)
 	CountAgentsByTenant(ctx context.Context, tenantID int64) (int64, error)
 	CountDeploymentTemplates(ctx context.Context) (int64, error)
+	CountPlatformEvents(ctx context.Context) (int64, error)
 	CountProjectsByTenant(ctx context.Context, tenantID int64) (int64, error)
 	CountProvidersByTenant(ctx context.Context, tenantID int64) (int64, error)
 	CountResourcesByProject(ctx context.Context, projectID int64) (int64, error)
@@ -44,11 +53,25 @@ type Querier interface {
 	CountTenants(ctx context.Context) (int64, error)
 	CreateAgent(ctx context.Context, arg CreateAgentParams) (Agent, error)
 	CreateDeploymentTemplate(ctx context.Context, arg CreateDeploymentTemplateParams) (DeploymentTemplate, error)
+	CreatePlatformEvent(ctx context.Context, arg CreatePlatformEventParams) (PlatformEvent, error)
 	CreateProject(ctx context.Context, arg CreateProjectParams) (Project, error)
 	CreateProvider(ctx context.Context, arg CreateProviderParams) (Provider, error)
 	CreateResource(ctx context.Context, arg CreateResourceParams) (Resource, error)
 	CreateService(ctx context.Context, arg CreateServiceParams) (Service, error)
 	CreateTenant(ctx context.Context, arg CreateTenantParams) (Tenant, error)
+	// Record that the agent owning this resource has gone offline. It writes a
+	// condition and health only — agent_id is deliberately UNTOUCHED: in docker mode
+	// there is no scheduler to reschedule onto and the workload's data may be
+	// host-local, so silently reassigning it would risk a split brain (two hosts
+	// running the same stateful workload) the moment the original host came back.
+	// Surface it, escalate it, let a human or an explicit policy decide.
+	//
+	// The COALESCE guard makes it idempotent: the supervisor re-runs every interval,
+	// and re-stamping would churn updated_at (which orders the work feed) and defeat
+	// once-per-episode escalation. No matching row means "already flagged".
+	// The flag clears on its own, because the next real agent report REPLACES status
+	// wholesale (see ApplyAgentReport) — recovery needs no separate unflag path.
+	FlagResourceHostUnreachable(ctx context.Context, resourceUuid uuid.UUID) (Resource, error)
 	GetAgentByID(ctx context.Context, agentID int64) (Agent, error)
 	GetAgentByUUID(ctx context.Context, agentUuid uuid.UUID) (Agent, error)
 	GetControlPlane(ctx context.Context) (ControlPlane, error)
@@ -70,6 +93,11 @@ type Querier interface {
 	GetTenantByUUID(ctx context.Context, tenantUuid uuid.UUID) (Tenant, error)
 	ListAgentsByTenant(ctx context.Context, arg ListAgentsByTenantParams) ([]Agent, error)
 	ListDeploymentTemplates(ctx context.Context, arg ListDeploymentTemplatesParams) ([]DeploymentTemplate, error)
+	// Every agent CURRENTLY considered offline, not just the ones this sweep
+	// transitioned. Supervision needs the standing set: a workload assigned to a
+	// host that died three ticks ago is still stranded, and a resource created or
+	// reassigned after the transition would otherwise never be noticed.
+	ListOfflineAgents(ctx context.Context) ([]Agent, error)
 	// The reconciler's work feed (read-only variant; the gateway uses ClaimAgentWork
 	// which additionally stamps the lease + agent assignment). A row is fed when:
 	//   * its observed state lags its spec, OR it is being torn down ('deleting'),
@@ -78,6 +106,11 @@ type Querier interface {
 	//     re-arms it);
 	//   * no dispatch lease is active and any retry backoff has elapsed.
 	ListOutOfSyncResources(ctx context.Context, limit int32) ([]Resource, error)
+	// Newest first: an operator reading the escalation log wants the current
+	// incident, not the install's first boot.
+	ListPlatformEvents(ctx context.Context, arg ListPlatformEventsParams) ([]PlatformEvent, error)
+	// The incident timeline for one agent/resource/service.
+	ListPlatformEventsBySubject(ctx context.Context, arg ListPlatformEventsBySubjectParams) ([]PlatformEvent, error)
 	ListProjectsByTenant(ctx context.Context, arg ListProjectsByTenantParams) ([]Project, error)
 	ListProvidersByKind(ctx context.Context, arg ListProvidersByKindParams) ([]Provider, error)
 	ListProvidersByTenant(ctx context.Context, arg ListProvidersByTenantParams) ([]Provider, error)
@@ -86,6 +119,16 @@ type Querier interface {
 	ListServicesByTenant(ctx context.Context, arg ListServicesByTenantParams) ([]Service, error)
 	// The platform's system services — the ones Core must keep running at all times.
 	ListSystemServices(ctx context.Context) ([]Service, error)
+	// Every system-tier instance, across all tenants and projects — the supervisor's
+	// feed. Availability tier is a REGISTRATION property carried in metadata
+	// (12-supervision-and-availability.md), never inferred from kind or name: the
+	// same image is a must-never-go-down platform component when registered as
+	// system and a disposable tenant workload when it is not.
+	//
+	// Unlike the reconciler feed this applies NO lease/backoff/state gates: the
+	// supervisor's whole job is to look at rows the feed has given up on (parked
+	// 'failed', leased to a dead agent) and decide they must run anyway.
+	ListSystemTierResources(ctx context.Context) ([]Resource, error)
 	ListTenants(ctx context.Context, arg ListTenantsParams) ([]Tenant, error)
 	MarkAgentEnrolled(ctx context.Context, arg MarkAgentEnrolledParams) (Agent, error)
 	// Deletion is a desired-state change, not an immediate erase: the row flips to
@@ -94,6 +137,37 @@ type Querier interface {
 	// "removed" report finalizes the delete (ApplyAgentReport with finalize) —
 	// otherwise the workload would keep running on the host with no record of it.
 	MarkResourceDeleting(ctx context.Context, resourceUuid uuid.UUID) error
+	// The liveness sweeper. An agent that stopped beating is a host that may be
+	// gone, and until something writes that down every agent looks online forever
+	// (last_seen_at was previously written and read by nothing).
+	//
+	// Scope is deliberately narrow:
+	//   * status <> 'offline' — only TRANSITIONS are returned, which is what makes
+	//     the caller's "emit one escalation per episode" free instead of requiring
+	//     de-duplication state.
+	//   * last_seen_at IS NOT NULL — an agent that has never checked in was never
+	//     online, so calling it 'offline' would overwrite the more precise truth
+	//     ('pending': created but not yet enrolled/registered).
+	MarkStaleAgentsOffline(ctx context.Context, staleSeconds float64) ([]Agent, error)
+	// Force a system-tier instance back onto the work feed.
+	//
+	// Bumping generation is what re-arms the EXISTING feed (observed_generation now
+	// lags again) rather than inventing a second dispatch path; clearing
+	// leased_until releases a lease held by an agent that will never answer; and
+	// resetting attempts/next_attempt_at is the load-bearing part: the retry budget
+	// exists to stop a poisoned TENANT spec from hot-looping an agent, but a system
+	// service may never be parked as terminally 'failed' — "never goes down"
+	// outranks "stop wasting cycles". System-tier work is therefore retried forever,
+	// with the supervisor's interval as the backoff and an escalation record once a
+	// human is needed.
+	//
+	// The state guard is not optional: 'deleting' is an operator-requested teardown,
+	// a DESIRED state, and resurrecting it would turn keep-alive into a service that
+	// cannot be removed. A COMPLETED teardown needs no guard — it stamps deleted_at,
+	// which the WHERE clause already excludes. State 'removed' with deleted_at still
+	// NULL therefore means the workload vanished without anyone asking, which is a
+	// re-dispatch case rather than an exempt one.
+	RedispatchSystemResource(ctx context.Context, resourceUuid uuid.UUID) (Resource, error)
 	SoftDeleteAgent(ctx context.Context, agentUuid uuid.UUID) error
 	SoftDeleteDeploymentTemplate(ctx context.Context, arg SoftDeleteDeploymentTemplateParams) error
 	SoftDeleteProject(ctx context.Context, projectUuid uuid.UUID) error

@@ -22,6 +22,11 @@ type fakeRepo struct {
 	lastReport *storage.ApplyAgentReportParams
 	lastClaim  *storage.ClaimAgentWorkParams
 	deleted    []uuid.UUID
+
+	// supervision paths
+	systemTier   []storage.Resource
+	redispatched []uuid.UUID
+	flagged      []uuid.UUID
 }
 
 func (f *fakeRepo) GetProjectByUUID(context.Context, uuid.UUID) (storage.Project, error) {
@@ -66,11 +71,47 @@ func (f *fakeRepo) ApplyAgentReport(_ context.Context, arg storage.ApplyAgentRep
 	f.lastReport = &arg
 	out := f.row
 	out.State = arg.State
+	out.Health = arg.Health
 	return out, nil
 }
 func (f *fakeRepo) MarkResourceDeleting(_ context.Context, id uuid.UUID) error {
 	f.deleted = append(f.deleted, id)
 	return nil
+}
+func (f *fakeRepo) ListSystemTierResources(context.Context) ([]storage.Resource, error) {
+	return f.systemTier, nil
+}
+
+// RedispatchSystemResource mirrors the SQL: generation bumped, state re-armed,
+// lease + retry budget cleared — and the 'deleting' guard.
+func (f *fakeRepo) RedispatchSystemResource(_ context.Context, id uuid.UUID) (storage.Resource, error) {
+	if id != f.row.ResourceUuid || f.row.State == "deleting" {
+		return storage.Resource{}, pgx.ErrNoRows
+	}
+	f.redispatched = append(f.redispatched, id)
+	f.row.Generation++
+	f.row.State = "pending"
+	f.row.LeasedUntil = pgtype.Timestamptz{}
+	f.row.Attempts = 0
+	f.row.NextAttemptAt = pgtype.Timestamptz{}
+	return f.row, nil
+}
+
+// FlagResourceHostUnreachable mirrors the SQL's idempotency guard: a second call
+// within the same episode matches no rows.
+func (f *fakeRepo) FlagResourceHostUnreachable(_ context.Context, id uuid.UUID) (storage.Resource, error) {
+	if id != f.row.ResourceUuid {
+		return storage.Resource{}, pgx.ErrNoRows
+	}
+	for _, seen := range f.flagged {
+		if seen == id {
+			return storage.Resource{}, pgx.ErrNoRows
+		}
+	}
+	f.flagged = append(f.flagged, id)
+	f.row.Health = HealthUnknown
+	f.row.Status = []byte(`{"host_unreachable":true}`)
+	return f.row, nil
 }
 
 func newRow(state string, agentID int64, gen, observed int64, attempts int32) storage.Resource {
@@ -244,6 +285,192 @@ func TestDeleteMarksDeletingInsteadOfErasing(t *testing.T) {
 	svc := NewService(repo)
 	require.NoError(t, svc.Delete(context.Background(), repo.row.ResourceUuid))
 	assert.Equal(t, []uuid.UUID{repo.row.ResourceUuid}, repo.deleted)
+}
+
+func TestResolveHealth(t *testing.T) {
+	tests := []struct {
+		name    string
+		current string
+		state   string
+		status  map[string]any
+		want    string
+	}{
+		{
+			name:   "reported health wins",
+			state:  "running",
+			status: map[string]any{"health": "unhealthy"},
+			want:   HealthUnhealthy,
+		},
+		{
+			name:   "reported health is normalized",
+			state:  "running",
+			status: map[string]any{"health": "  HEALTHY "},
+			want:   HealthHealthy,
+		},
+		{
+			name:    "running without a health key keeps the previous value",
+			current: HealthHealthy,
+			state:   "running",
+			status:  map[string]any{"container_id": "abc"},
+			want:    HealthHealthy,
+		},
+		{
+			// A stale "healthy" on a dead workload is the most dangerous value
+			// in the table: supervision would read a down system service as fine.
+			name:    "a failure report clears a stale healthy",
+			current: HealthHealthy,
+			state:   "failed",
+			status:  map[string]any{"error": "image pull failed"},
+			want:    HealthUnreported,
+		},
+		{
+			name:    "a teardown report clears health",
+			current: HealthHealthy,
+			state:   "removed",
+			status:  map[string]any{"removed": 1},
+			want:    HealthUnreported,
+		},
+		{
+			name:   "an over-long value from a remote agent is truncated, not rejected",
+			state:  "running",
+			status: map[string]any{"health": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
+			want:   "aaaaaaaaaaaaaaaaaaaa", // 20 chars = the column width
+		},
+		{
+			name:   "nil status on a drift observation clears health",
+			state:  "exited",
+			status: nil,
+			want:   HealthUnreported,
+		},
+		{
+			// `"health": null` is "nothing to report", not the string "<nil>".
+			name:    "a JSON null is treated as absent",
+			current: HealthHealthy,
+			state:   "running",
+			status:  map[string]any{"health": nil},
+			want:    HealthHealthy,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, resolveHealth(tt.current, tt.state, tt.status))
+		})
+	}
+}
+
+func TestApplyAgentReportPersistsHealth(t *testing.T) {
+	repo := &fakeRepo{row: newRow("running", 7, 2, 2, 0)}
+	svc := NewService(repo)
+	res, err := svc.ApplyAgentReport(context.Background(), 7, repo.row.ResourceUuid, AgentReportInput{
+		State:              "running",
+		ObservedGeneration: 2,
+		Status:             map[string]any{"container_id": "c1", "health": "unhealthy"},
+	}, 10)
+	require.NoError(t, err)
+	require.NotNil(t, repo.lastReport)
+	// "running" is not "working": the report says running AND unhealthy, and both
+	// must survive into the row for supervision to act on it.
+	assert.Equal(t, "running", repo.lastReport.State)
+	assert.Equal(t, HealthUnhealthy, repo.lastReport.Health)
+	assert.Equal(t, HealthUnhealthy, res.Health, "health is exposed on the API view")
+}
+
+func TestRedispatchSystem(t *testing.T) {
+	t.Run("bumps generation, clears the lease and resets the retry budget", func(t *testing.T) {
+		row := newRow("failed", 7, 3, 1, 9)
+		row.LeasedUntil = pgtype.Timestamptz{Time: time.Now().Add(time.Minute), Valid: true}
+		row.NextAttemptAt = pgtype.Timestamptz{Time: time.Now().Add(time.Hour), Valid: true}
+		repo := &fakeRepo{row: row}
+
+		inst, err := NewService(repo).RedispatchSystem(context.Background(), row.ResourceUuid)
+		require.NoError(t, err)
+		assert.Equal(t, []uuid.UUID{row.ResourceUuid}, repo.redispatched)
+		assert.Equal(t, int64(4), inst.Generation, "generation must advance so the EXISTING feed re-offers it")
+		assert.Equal(t, "pending", inst.State, "a system service is never left parked as failed")
+		assert.False(t, inst.Leased, "the dead agent's lease must be released")
+		assert.Equal(t, int32(0), inst.Attempts, "the retry budget must not park a system service")
+		assert.False(t, repo.row.NextAttemptAt.Valid)
+	})
+
+	t.Run("refuses to resurrect a requested teardown", func(t *testing.T) {
+		repo := &fakeRepo{row: newRow("deleting", 7, 2, 1, 0)}
+		_, err := NewService(repo).RedispatchSystem(context.Background(), repo.row.ResourceUuid)
+		var ferr *apperror.ForbiddenError
+		require.ErrorAs(t, err, &ferr)
+		assert.Empty(t, repo.redispatched, "keep-alive must never fight an explicit removal")
+	})
+
+	t.Run("unknown resource is not found", func(t *testing.T) {
+		repo := &fakeRepo{row: newRow("running", 7, 1, 1, 0)}
+		_, err := NewService(repo).RedispatchSystem(context.Background(), uuid.New())
+		var nerr *apperror.NotFoundError
+		assert.ErrorAs(t, err, &nerr)
+	})
+}
+
+func TestFlagHostUnreachableIsIdempotentAndNeverReassigns(t *testing.T) {
+	row := newRow("running", 7, 2, 2, 0)
+	row.Health = HealthHealthy
+	repo := &fakeRepo{row: row}
+	svc := NewService(repo)
+
+	flagged, err := svc.FlagHostUnreachable(context.Background(), row.ResourceUuid)
+	require.NoError(t, err)
+	assert.True(t, flagged, "the first call in an episode writes the flag")
+
+	// Second pass in the same episode: no write, no second escalation.
+	flagged, err = svc.FlagHostUnreachable(context.Background(), row.ResourceUuid)
+	require.NoError(t, err)
+	assert.False(t, flagged)
+	assert.Len(t, repo.flagged, 1)
+
+	// The agent assignment survives: docker mode has no scheduler and the data
+	// may be host-local, so Core must not silently move the workload.
+	assert.True(t, repo.row.AgentID.Valid)
+	assert.Equal(t, int64(7), repo.row.AgentID.Int64)
+	assert.Equal(t, HealthUnknown, repo.row.Health)
+}
+
+func TestListSystemTierProjectsSupervisionFields(t *testing.T) {
+	row := newRow("error", 9, 4, 2, 3)
+	row.Name = "system-auth"
+	row.Health = HealthUnhealthy
+	row.Metadata = []byte(`{"tier":"system"}`)
+	row.LeasedUntil = pgtype.Timestamptz{Time: time.Now().Add(time.Minute), Valid: true}
+	repo := &fakeRepo{systemTier: []storage.Resource{row}}
+
+	got, err := NewService(repo).ListSystemTier(context.Background())
+	require.NoError(t, err)
+	require.Len(t, got, 1)
+	inst := got[0]
+	assert.Equal(t, "system-auth", inst.Name)
+	assert.Equal(t, HealthUnhealthy, inst.Health)
+	assert.Equal(t, int64(9), inst.AgentID)
+	assert.True(t, inst.Leased)
+	assert.Equal(t, int32(3), inst.Attempts)
+	assert.False(t, inst.Converged(), "observed 2 < generation 4")
+	assert.False(t, inst.Terminating())
+	assert.Equal(t, "system", inst.Metadata["tier"])
+}
+
+func TestSystemInstanceTerminating(t *testing.T) {
+	tests := []struct {
+		state string
+		want  bool
+	}{
+		{"deleting", true},
+		// A FINISHED teardown stamps deleted_at and leaves the feed, so a
+		// visible 'removed' row means the workload vanished unasked — a
+		// keep-alive case, not an exemption.
+		{"removed", false},
+		{"running", false},
+		{"failed", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.state, func(t *testing.T) {
+			assert.Equal(t, tt.want, SystemInstance{State: tt.state}.Terminating())
+		})
+	}
 }
 
 func TestBuildMRN(t *testing.T) {

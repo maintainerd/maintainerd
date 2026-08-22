@@ -116,6 +116,13 @@ var routePermissions = map[string]perms{
 	"providers": {Read: "core:provider:read", Write: "core:provider:write"},
 	"agents":    {Read: "core:agent:read", Write: "core:agent:write"},
 	"resources": {Read: "core:resource:read", Write: "core:resource:write"},
+	// The platform escalation log (internal/event). The surface is read-only:
+	// events are written by Core's own supervision loop as a record of what it
+	// observed, so no mutating route is registered at all — a caller that could
+	// POST one could forge evidence, and one that could DELETE one could erase an
+	// incident. The write permission is still declared so a future write surface
+	// must be granted explicitly instead of inheriting the read grant.
+	"events": {Read: "core:event:read", Write: "core:event:write"},
 	// The steward surface reads and rewrites the platform's IAM wiring in Auth
 	// (services, APIs, permissions, policies, machine clients). There is no
 	// meaningful read/write split for it: seeing which principals and grants

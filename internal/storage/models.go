@@ -59,6 +59,19 @@ type DeploymentTemplate struct {
 	DeletedAt    pgtype.Timestamptz `json:"deleted_at"`
 }
 
+type PlatformEvent struct {
+	EventID     int64       `json:"event_id"`
+	EventUuid   uuid.UUID   `json:"event_uuid"`
+	TenantID    pgtype.Int8 `json:"tenant_id"`
+	Kind        string      `json:"kind"`
+	Severity    string      `json:"severity"`
+	SubjectType string      `json:"subject_type"`
+	SubjectUuid pgtype.UUID `json:"subject_uuid"`
+	Message     string      `json:"message"`
+	Details     []byte      `json:"details"`
+	CreatedAt   time.Time   `json:"created_at"`
+}
+
 type Project struct {
 	ProjectID   int64              `json:"project_id"`
 	ProjectUuid uuid.UUID          `json:"project_uuid"`
@@ -108,6 +121,7 @@ type Resource struct {
 	Kind               string             `json:"kind"`
 	Name               string             `json:"name"`
 	State              string             `json:"state"`
+	Health             string             `json:"health"`
 	Spec               []byte             `json:"spec"`
 	Status             []byte             `json:"status"`
 	Generation         int64              `json:"generation"`

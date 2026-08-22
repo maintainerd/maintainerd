@@ -22,17 +22,22 @@ import (
 // toward an observed `status`. generation/observed_generation track how far the
 // reconciler has caught up with the latest spec.
 type Resource struct {
-	UUID               uuid.UUID      `json:"resource_uuid"`
-	ProjectUUID        uuid.UUID      `json:"project_uuid"`
-	MRN                string         `json:"mrn"`
-	MRNService         string         `json:"mrn_service"`
-	MRNTenant          string         `json:"mrn_tenant"`
-	MRNProject         string         `json:"mrn_project"`
-	MRNResourceType    string         `json:"mrn_resource_type"`
-	MRNResourcePath    string         `json:"mrn_resource_path"`
-	Kind               string         `json:"kind"`
-	Name               string         `json:"name"`
-	State              string         `json:"state"`
+	UUID            uuid.UUID `json:"resource_uuid"`
+	ProjectUUID     uuid.UUID `json:"project_uuid"`
+	MRN             string    `json:"mrn"`
+	MRNService      string    `json:"mrn_service"`
+	MRNTenant       string    `json:"mrn_tenant"`
+	MRNProject      string    `json:"mrn_project"`
+	MRNResourceType string    `json:"mrn_resource_type"`
+	MRNResourcePath string    `json:"mrn_resource_path"`
+	Kind            string    `json:"kind"`
+	Name            string    `json:"name"`
+	State           string    `json:"state"`
+	// Health is the workload's last reported health, exposed alongside State
+	// because "running" is not "working": a process that is up while its
+	// healthcheck fails is a distinct, actionable condition rather than a
+	// variation of running. '' means nothing has been reported yet.
+	Health             string         `json:"health"`
 	Spec               map[string]any `json:"spec"`
 	Status             map[string]any `json:"status"`
 	Generation         int64          `json:"generation"`
@@ -388,6 +393,11 @@ type AgentReportInput struct {
 //     plain observation.
 //   - anything else ("exited", "unhealthy", ... — drift observations) →
 //     recorded as-is; attempts/backoff untouched.
+//
+// Independently of the state machine, the report's health is promoted from the
+// status JSON onto the resource's own `health` column (see resolveHealth): the
+// supervisor has to act on unhealthy-but-running, and "the container is running"
+// is not "the service works".
 func (s *Service) ApplyAgentReport(ctx context.Context, agentID int64, resourceUUID uuid.UUID, in AgentReportInput, attemptBudget int) (*Resource, error) {
 	current, err := s.q.GetResourceByUUID(ctx, resourceUUID)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -418,6 +428,7 @@ func (s *Service) ApplyAgentReport(ctx context.Context, agentID int64, resourceU
 		ObservedGeneration: in.ObservedGeneration,
 		Attempts:           current.Attempts,
 		NextAttemptAt:      current.NextAttemptAt,
+		Health:             resolveHealth(current.Health, in.State, in.Status),
 	}
 	switch in.State {
 	case "running":
@@ -477,6 +488,190 @@ func (s *Service) ApplyAgentReport(ctx context.Context, agentID int64, resourceU
 	return &r, nil
 }
 
+// Health values, mirroring the runtime contract (kit runtime.HealthState) plus
+// the one value only Core can observe.
+const (
+	// HealthUnreported is the zero value: no agent has said anything yet.
+	HealthUnreported = ""
+	// HealthNone means the workload has no healthcheck configured, so health
+	// carries no information — treat it as "unknown", never as "healthy".
+	HealthNone = "none"
+	// HealthStarting means the healthcheck has not settled yet.
+	HealthStarting = "starting"
+	// HealthHealthy means the last healthcheck passed.
+	HealthHealthy = "healthy"
+	// HealthUnhealthy means the healthcheck is failing. For a system-tier
+	// workload this is a supervision trigger, not a status colour.
+	HealthUnhealthy = "unhealthy"
+	// HealthUnknown is written by Core (not the agent) when the reporting host
+	// has gone offline: the last known health is stale and must not be trusted.
+	HealthUnknown = "unknown"
+)
+
+// maxHealthLen matches resources.health VARCHAR(20). An agent is a remote
+// caller, so its value is truncated rather than trusted to fit — a rogue or
+// buggy agent must not be able to fail the write with a length error.
+const maxHealthLen = 20
+
+// resolveHealth decides the health value one agent report writes.
+//
+// A report that carries "health" wins outright — that is the runtime's own
+// observation. A report WITHOUT it is interpreted by state:
+//   - "running": keep the previous value. A creation ack that omitted health is
+//     not evidence that health changed.
+//   - anything else (failed, removed, exited, ...): clear it. The workload is
+//     gone or never came up, and a stale "healthy" left behind would be the
+//     single most dangerous value in the table — supervision would read a dead
+//     system service as fine.
+//
+// A JSON null is treated as absent rather than stringified: `"health": null` is
+// the agent saying it has nothing to report, not the literal value "<nil>".
+func resolveHealth(current, state string, status map[string]any) string {
+	if raw, ok := status["health"]; ok && raw != nil {
+		h := strings.ToLower(strings.TrimSpace(fmt.Sprint(raw)))
+		if len(h) > maxHealthLen {
+			h = h[:maxHealthLen]
+		}
+		return h
+	}
+	if state == "running" {
+		return current
+	}
+	return HealthUnreported
+}
+
+// SystemInstance is a system-tier resource as the supervisor needs to see it.
+//
+// It deliberately exposes what the public Resource view hides — the agent
+// assignment, the dispatch lease and the retry budget — because those are
+// exactly the availability signals supervision reasons about, while remaining a
+// read-only projection so the supervisor cannot reach the raw row.
+type SystemInstance struct {
+	UUID               uuid.UUID
+	Name               string
+	Kind               string
+	State              string
+	Health             string
+	AgentID            int64 // 0 = unassigned
+	Leased             bool  // a dispatch lease is (or was) stamped
+	Attempts           int32
+	Generation         int64
+	ObservedGeneration int64
+	UpdatedAt          time.Time
+	Metadata           map[string]any
+}
+
+// Converged reports whether the agent has answered for the current desired
+// revision. While false the item is still out-of-sync and the ordinary feed
+// owns it; supervision only steps in once it has been out-of-sync too long.
+func (s SystemInstance) Converged() bool { return s.ObservedGeneration >= s.Generation }
+
+// Terminating reports whether a teardown is the DESIRED state. Keep-alive must
+// never fight an explicit removal — that would make a system service undeletable
+// rather than highly available.
+//
+// Only 'deleting' qualifies. A FINISHED teardown stamps deleted_at and drops out
+// of the system-tier feed entirely, so a visible 'removed' row means the workload
+// vanished without anyone asking for it — a keep-alive case, not an exemption.
+func (s SystemInstance) Terminating() bool { return s.State == "deleting" }
+
+// ListSystemTier returns every system-tier instance across all tenants and
+// projects — the supervisor's feed. Tier is registration data carried in
+// metadata, never inferred from kind or name (see
+// plan/12-supervision-and-availability.md): the same image is platform-critical
+// when registered as system and disposable when it is not.
+func (s *Service) ListSystemTier(ctx context.Context) ([]SystemInstance, error) {
+	rows, err := s.q.ListSystemTierResources(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]SystemInstance, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, toSystemInstance(r))
+	}
+	return out, nil
+}
+
+// RedispatchSystem forces a system-tier instance back onto the work feed:
+// generation is bumped (so the EXISTING feed picks it up — there is no second
+// dispatch path), the lease held by a possibly-dead agent is released, and the
+// retry budget is reset.
+//
+// Resetting the budget is the point. The attempt budget exists so a poisoned
+// TENANT spec cannot hot-loop an agent forever; applying it to a system service
+// would let a transient failure park Auth as terminally 'failed' until a human
+// edited its spec. "System services must never go down" outranks "stop wasting
+// cycles", so system-tier work retries indefinitely — the supervisor's interval
+// is the backoff, and repeated failure produces an escalation record rather than
+// a silent stop.
+//
+// A resource whose desired state is teardown is refused, in Go and again in SQL:
+// keep-alive may not resurrect something an operator removed.
+func (s *Service) RedispatchSystem(ctx context.Context, id uuid.UUID) (*SystemInstance, error) {
+	current, err := s.q.GetResourceByUUID(ctx, id)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, apperror.NewNotFound("resource")
+	}
+	if err != nil {
+		return nil, err
+	}
+	if current.State == "deleting" {
+		return nil, apperror.NewForbidden("a resource being torn down is never re-dispatched")
+	}
+	row, err := s.q.RedispatchSystemResource(ctx, id)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, apperror.NewNotFound("resource")
+	}
+	if err != nil {
+		return nil, err
+	}
+	inst := toSystemInstance(row)
+	return &inst, nil
+}
+
+// FlagHostUnreachable records that the agent owning this resource has gone
+// offline, and reports whether THIS call was the one that wrote the flag.
+//
+// The agent assignment is left untouched on purpose: in docker mode there is no
+// scheduler to reschedule onto and the workload's data may be host-local, so a
+// silent reassignment risks two hosts running the same stateful workload the
+// moment the original returns. Surface it and escalate; a human or an explicit
+// policy decides (plan/12-supervision-and-availability.md, decision 8).
+//
+// false with a nil error means the flag was already set — the supervisor runs
+// every interval, and it uses this to escalate once per episode instead of once
+// per tick.
+func (s *Service) FlagHostUnreachable(ctx context.Context, id uuid.UUID) (bool, error) {
+	_, err := s.q.FlagResourceHostUnreachable(ctx, id)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+func toSystemInstance(r storage.Resource) SystemInstance {
+	inst := SystemInstance{
+		UUID:               r.ResourceUuid,
+		Name:               r.Name,
+		Kind:               r.Kind,
+		State:              r.State,
+		Health:             r.Health,
+		Leased:             r.LeasedUntil.Valid,
+		Attempts:           r.Attempts,
+		Generation:         r.Generation,
+		ObservedGeneration: r.ObservedGeneration,
+		UpdatedAt:          r.UpdatedAt,
+		Metadata:           jsonutil.JSONToMap(r.Metadata),
+	}
+	if r.AgentID.Valid {
+		inst.AgentID = r.AgentID.Int64
+	}
+	return inst
+}
+
 func toWorkItems(rows []storage.Resource) []WorkItem {
 	items := make([]WorkItem, 0, len(rows))
 	for _, r := range rows {
@@ -521,6 +716,7 @@ func toResource(m storage.Resource, projectUUID uuid.UUID) Resource {
 		Kind:               m.Kind,
 		Name:               m.Name,
 		State:              m.State,
+		Health:             m.Health,
 		Spec:               jsonutil.JSONToMap(m.Spec),
 		Status:             jsonutil.JSONToMap(m.Status),
 		Generation:         m.Generation,
