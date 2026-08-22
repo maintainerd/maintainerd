@@ -29,11 +29,32 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # go.mod replaces the sibling modules with local paths (../maintainerd-kit
+      # etc.) for the workspace layout. CI has no siblings, so they are checked
+      # out here and the replaces repointed below — without this every job fails
+      # with "replacement directory does not exist".
+      - name: Check out sibling deps
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: maintainerd/maintainerd-kit
+          path: .deps/kit
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: maintainerd/maintainerd-sdk
+          path: .deps/sdk
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: maintainerd/maintainerd-secret
+          path: .deps/secret
       - uses: actions/setup-go@44694675825211faa026b3c33043df3e48a5fa00 # v6.0.0
         with:
           go-version-file: go.mod
           cache: true
-      - run: go mod verify
+      - name: Repoint replaces at checked-out siblings
+        run: |
+          go mod edit -replace github.com/maintainerd/kit=./.deps/kit
+          go mod edit -replace github.com/maintainerd/sdk=./.deps/sdk
+          go mod edit -replace github.com/maintainerd/secret=./.deps/secret
       - run: go build ./...
       - run: go vet ./...
       - run: go test -race -count=1 -timeout=300s ./...
@@ -43,10 +64,28 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Check out sibling deps
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: maintainerd/maintainerd-kit
+          path: .deps/kit
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: maintainerd/maintainerd-sdk
+          path: .deps/sdk
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: maintainerd/maintainerd-secret
+          path: .deps/secret
       - uses: actions/setup-go@44694675825211faa026b3c33043df3e48a5fa00 # v6.0.0
         with:
           go-version-file: go.mod
           cache: true
+      - name: Repoint replaces at checked-out siblings
+        run: |
+          go mod edit -replace github.com/maintainerd/kit=./.deps/kit
+          go mod edit -replace github.com/maintainerd/sdk=./.deps/sdk
+          go mod edit -replace github.com/maintainerd/secret=./.deps/secret
       - name: staticcheck
         run: |
           go install honnef.co/go/tools/cmd/staticcheck@latest
