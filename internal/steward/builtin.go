@@ -49,13 +49,38 @@ func BuiltinCatalog(aud AudienceResolver) Catalog {
 	return Catalog{Objects: []Object{
 		// --- secret: the KMS-like secret store (a callee) -------------------
 		svc("secret", "Maintainerd Secret", "Encrypted secret storage", "Secret"),
+		// This list MUST equal what maintainerd-secret enforces — the constants
+		// behind `permissions.DeclaredPermissions()` there, which that service
+		// derives from the same route/method map its guard consults.
+		//
+		// What Core declares here is what Core registers in Auth when it provisions
+		// the service. A permission the service demands but this list omits exists
+		// nowhere in Auth, so no token can carry it and every route behind it
+		// answers 403 to everyone — silently, and only in core-provisioned installs.
+		// Core shipped precisely that bug against its own API once (52b2592). This
+		// list carried only the six data-plane actions and omitted all six
+		// management ones, which would have locked the Secret console's project,
+		// environment, folder, webhook and audit surfaces out of every controlled
+		// install while working fine standalone.
+		//
+		// Core cannot import Secret's package — Secret is optional and
+		// independently released — so the two lists are kept in step by review.
+		// When Secret adds an action, add it here in the same change.
 		api("secret", "Maintainerd Secret API", secretAud, []Permission{
-			perm("secret:GetSecret", "Read a secret value"),
+			// Data plane — acting on secret values.
+			perm("secret:GetSecret", "Reveal a secret value"),
 			perm("secret:PutSecret", "Create or update a secret"),
-			perm("secret:DeleteSecret", "Delete a secret"),
-			perm("secret:ListSecrets", "List secret metadata"),
-			perm("secret:RotateSecret", "Rotate a secret"),
-			perm("secret:ReadMetadata", "Read secret metadata"),
+			perm("secret:DeleteSecret", "Delete, restore or destroy a secret"),
+			perm("secret:ListSecrets", "List secrets"),
+			perm("secret:RotateSecret", "Rotate a secret now"),
+			perm("secret:ReadMetadata", "Read secret and hierarchy metadata, never a value"),
+			// Management plane — the administrative surfaces the console drives.
+			perm("secret:ManageProject", "Create, update and delete projects"),
+			perm("secret:ManageEnvironment", "Create, update and delete environments"),
+			perm("secret:ManageFolder", "Create, move and delete folders, and manage scope imports"),
+			perm("secret:ManageRotation", "Manage rotation policies and webhook endpoints"),
+			perm("secret:ReadAudit", "Read the audit trail"),
+			perm("secret:Admin", "Full administrative access to Maintainerd Secret"),
 		}),
 		// secret is a pure callee today — it makes no outbound calls, so its policy
 		// is empty. The client still needs SOME requestable scope or the credential
