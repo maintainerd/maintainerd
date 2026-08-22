@@ -40,6 +40,7 @@ func Router(a *app.App, guard authz.Guard) http.Handler {
 		r.Mount("/agents", a.Agent.Routes())
 		r.Mount("/resources", a.Resource.Routes())
 		r.Mount("/setup", a.Setup.Routes())
+		r.Mount("/steward", a.Steward.Routes())
 	})
 
 	return r

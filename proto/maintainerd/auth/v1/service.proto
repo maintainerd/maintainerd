@@ -1,0 +1,150 @@
+syntax = "proto3";
+
+package maintainerd.auth.v1;
+
+import "google/protobuf/struct.proto";
+import "google/protobuf/timestamp.proto";
+import "maintainerd/auth/v1/tenant.proto";
+
+// Client stubs generated INTO core: after the setup window closes, core operates
+// auth through its REGULAR, permission-verified management RPCs, authenticated as
+// its m2m control client (private_key_jwt, RFC 7523). Core is a CLIENT of these
+// services and never serves them.
+//
+// Kept in sync with maintainerd-auth/proto/maintainerd/auth/v1/service.proto — copy the
+// upstream file verbatim and rewrite only this go_package option.
+option go_package = "github.com/maintainerd/core/gen/maintainerd/auth/v1;authv1";
+
+service ServiceService {
+  rpc GetMyPolicyBundle(GetMyPolicyBundleRequest) returns (GetMyPolicyBundleResponse);
+  rpc ListServices(ListServicesRequest) returns (ListServicesResponse);
+  rpc GetService(GetServiceRequest) returns (GetServiceResponse);
+  rpc CreateService(CreateServiceRequest) returns (CreateServiceResponse);
+  rpc UpdateService(UpdateServiceRequest) returns (UpdateServiceResponse);
+  rpc SetServiceStatus(SetServiceStatusRequest) returns (SetServiceStatusResponse);
+  rpc DeleteService(DeleteServiceRequest) returns (DeleteServiceResponse);
+  rpc AssignServicePolicy(AssignServicePolicyRequest) returns (AssignServicePolicyResponse);
+  rpc RemoveServicePolicy(RemoveServicePolicyRequest) returns (RemoveServicePolicyResponse);
+}
+
+message Service {
+  string service_id = 1;
+  string name = 2;
+  string display_name = 3;
+  string description = 4;
+  string version = 5;
+  string status = 6;
+  bool is_system = 7;
+  int64 api_count = 8;
+  int64 policy_count = 9;
+  google.protobuf.Timestamp created_at = 10;
+  google.protobuf.Timestamp updated_at = 11;
+}
+
+message ServicePolicyBundle {
+  string service = 1;
+  string version = 2;
+  repeated google.protobuf.Struct policies = 3;
+  google.protobuf.Timestamp generated_at = 4;
+}
+
+message GetMyPolicyBundleRequest {
+  string if_none_match = 1;
+}
+
+message GetMyPolicyBundleResponse {
+  ServicePolicyBundle bundle = 1;
+  string etag = 2;
+  bool not_modified = 3;
+}
+
+message ListServicesRequest {
+  string tenant_id = 1;
+  string name = 2;
+  string display_name = 3;
+  string description = 4;
+  string version = 5;
+  repeated string status = 6;
+  optional bool is_system = 7;
+  Pagination pagination = 8;
+}
+
+message ListServicesResponse {
+  repeated Service services = 1;
+  PageMetadata page = 2;
+}
+
+message GetServiceRequest {
+  string tenant_id = 1;
+  string service_id = 2;
+}
+
+message GetServiceResponse {
+  Service service = 1;
+}
+
+message CreateServiceRequest {
+  string tenant_id = 1;
+  string name = 2;
+  string display_name = 3;
+  string description = 4;
+  string version = 5;
+  string status = 6;
+}
+
+message CreateServiceResponse {
+  Service service = 1;
+}
+
+message UpdateServiceRequest {
+  string tenant_id = 1;
+  string service_id = 2;
+  string name = 3;
+  string display_name = 4;
+  string description = 5;
+  string version = 6;
+  string status = 7;
+}
+
+message UpdateServiceResponse {
+  Service service = 1;
+}
+
+message SetServiceStatusRequest {
+  string tenant_id = 1;
+  string service_id = 2;
+  string status = 3;
+}
+
+message SetServiceStatusResponse {
+  Service service = 1;
+}
+
+message DeleteServiceRequest {
+  string tenant_id = 1;
+  string service_id = 2;
+}
+
+message DeleteServiceResponse {
+  Service service = 1;
+}
+
+message AssignServicePolicyRequest {
+  string tenant_id = 1;
+  string service_id = 2;
+  string policy_id = 3;
+}
+
+message AssignServicePolicyResponse {
+  bool assigned = 1;
+}
+
+message RemoveServicePolicyRequest {
+  string tenant_id = 1;
+  string service_id = 2;
+  string policy_id = 3;
+}
+
+message RemoveServicePolicyResponse {
+  bool removed = 1;
+}

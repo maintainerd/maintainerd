@@ -3,9 +3,6 @@ package setup
 import (
 	"context"
 	"fmt"
-	"os"
-	"path/filepath"
-	"strings"
 
 	"google.golang.org/grpc"
 
@@ -23,13 +20,18 @@ type grpcCallOption = grpc.CallOption
 
 type authStewardApplier struct {
 	cli      stewardSetupClient
-	keys     *stewardKeyStore
+	keys     *steward.FileKeyStore
 	services map[string]steward.ServiceSpec
 }
 
-func newAuthStewardApplier(cli stewardSetupClient, keys *stewardKeyStore) *authStewardApplier {
+func newAuthStewardApplier(cli stewardSetupClient, keys *steward.FileKeyStore) *authStewardApplier {
 	return &authStewardApplier{cli: cli, keys: keys, services: map[string]steward.ServiceSpec{}}
 }
+
+// newStewardKeyStore builds the per-service key store the setup-window applier
+// writes through. It is the SAME store the post-setup regular-surface applier
+// reads (see internal/steward.FileKeyStore).
+func newStewardKeyStore(dir string) *steward.FileKeyStore { return steward.NewFileKeyStore(dir) }
 
 func (o *Orchestrator) reconcileSteward(ctx context.Context, cli authv1.SetupServiceClient) error {
 	keys := newStewardKeyStore(o.cfg.StewardKeyDir)
@@ -94,9 +96,7 @@ func (a *authStewardApplier) EnsureServiceClient(ctx context.Context, name strin
 	}
 	if resp.GetAlreadyExisted() && !existed {
 		if generated {
-			if path, perr := a.keys.path(spec.Service); perr == nil {
-				_ = os.Remove(path)
-			}
+			_ = a.keys.Discard(spec.Service)
 		}
 		return nil, fmt.Errorf("auth client %q already exists but no local private key was found for service %q", name, spec.Service)
 	}
@@ -125,58 +125,4 @@ func (a *authStewardApplier) EnsureServicePolicy(ctx context.Context, name strin
 		PolicyName:     firstNonEmpty(spec.PolicyName, name),
 	})
 	return err
-}
-
-type stewardKeyStore struct {
-	dir string
-}
-
-func newStewardKeyStore(dir string) *stewardKeyStore {
-	return &stewardKeyStore{dir: dir}
-}
-
-func (s *stewardKeyStore) PrivateKey(service string) (string, bool, error) {
-	path, err := s.path(service)
-	if err != nil {
-		return "", false, err
-	}
-	b, err := os.ReadFile(path)
-	if err == nil {
-		return string(b), true, nil
-	}
-	if os.IsNotExist(err) {
-		return "", false, nil
-	}
-	return "", false, fmt.Errorf("read steward key for %q: %w", service, err)
-}
-
-func (s *stewardKeyStore) Record(_ context.Context, service string, privateKeyPEM string) error {
-	path, err := s.path(service)
-	if err != nil {
-		return err
-	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return err
-	}
-	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
-	if os.IsExist(err) {
-		return nil
-	}
-	if err != nil {
-		return err
-	}
-	defer func() { _ = f.Close() }()
-	_, err = f.WriteString(privateKeyPEM)
-	return err
-}
-
-func (s *stewardKeyStore) path(service string) (string, error) {
-	if s == nil || strings.TrimSpace(s.dir) == "" {
-		return "", fmt.Errorf("STEWARD_KEY_DIR is required to record generated service client keys")
-	}
-	name := strings.TrimSpace(service)
-	if name == "" || strings.Contains(name, "/") || strings.Contains(name, string(os.PathSeparator)) || strings.Contains(name, "..") {
-		return "", fmt.Errorf("invalid steward service name %q", service)
-	}
-	return filepath.Join(s.dir, name+".pem"), nil
 }

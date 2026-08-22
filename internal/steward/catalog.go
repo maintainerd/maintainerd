@@ -53,12 +53,33 @@ type Catalog struct {
 
 // ---- specs -----------------------------------------------------------------
 
+// Tier says how core's own service registry should record a capability.
+// TierSystem services are platform-critical (core must keep them running and
+// must refuse to remove them); TierApp services are ordinary.
+type Tier string
+
+const (
+	TierSystem Tier = "system"
+	TierApp    Tier = "app"
+)
+
+// IsSystem maps the tier onto the services.is_system column.
+func (t Tier) IsSystem() bool { return t == TierSystem }
+
 // ServiceSpec declares a service principal: a maintainerd service (secret,
 // runtime, agent, etc.) that auth can authorize calls to and/or from.
 type ServiceSpec struct {
 	DisplayName string `json:"displayName" yaml:"displayName"`
 	Description string `json:"description" yaml:"description"`
 	Version     string `json:"version" yaml:"version"`
+
+	// RegistryKind and Tier describe how core records this capability in its OWN
+	// services registry once the auth-side object applies. They are catalog data,
+	// not auth data — auth has no notion of either — and they exist so a newly
+	// provisioned capability stops sitting at status 'pending' forever. An empty
+	// RegistryKind means "do not mirror this into the registry".
+	RegistryKind string `json:"registryKind" yaml:"registryKind"`
+	Tier         Tier   `json:"tier" yaml:"tier"`
 }
 
 func (ServiceSpec) Kind() Kind { return KindService }
@@ -87,6 +108,14 @@ type Permission struct {
 type ServiceClientSpec struct {
 	Service  string `json:"service" yaml:"service"`
 	Audience string `json:"audience" yaml:"audience"`
+
+	// AllowedScopes bounds what this credential may ever REQUEST at the token
+	// endpoint (RFC 6749 §3.3). It is the client-side half of the grant whose
+	// server-side half is the attached ServicePolicy, and it must be stated: an
+	// empty allowlist means "any scope", which for a machine credential with no
+	// user in the loop makes the credential unbounded. Normally the same action
+	// list as the service's ServicePolicy.
+	AllowedScopes []string `json:"allowedScopes" yaml:"allowedScopes"`
 }
 
 func (ServiceClientSpec) Kind() Kind { return KindServiceClient }

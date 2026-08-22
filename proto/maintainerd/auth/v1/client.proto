@@ -1,0 +1,365 @@
+syntax = "proto3";
+
+package maintainerd.auth.v1;
+
+import "google/protobuf/timestamp.proto";
+import "google/protobuf/struct.proto";
+import "maintainerd/auth/v1/tenant.proto";
+
+// Client stubs generated INTO core: after the setup window closes, core operates
+// auth through its REGULAR, permission-verified management RPCs, authenticated as
+// its m2m control client (private_key_jwt, RFC 7523). Core is a CLIENT of these
+// services and never serves them.
+//
+// Kept in sync with maintainerd-auth/proto/maintainerd/auth/v1/client.proto — copy the
+// upstream file verbatim and rewrite only this go_package option.
+option go_package = "github.com/maintainerd/core/gen/maintainerd/auth/v1;authv1";
+
+service ClientService {
+  rpc ListClients(ListClientsRequest) returns (ListClientsResponse);
+  rpc GetClient(GetClientRequest) returns (GetClientResponse);
+  rpc GetClientSecret(GetClientSecretRequest) returns (GetClientSecretResponse);
+  rpc RotateClientSecret(RotateClientSecretRequest) returns (RotateClientSecretResponse);
+  rpc GetClientConfig(GetClientConfigRequest) returns (GetClientConfigResponse);
+  rpc CreateClient(CreateClientRequest) returns (CreateClientResponse);
+  rpc UpdateClient(UpdateClientRequest) returns (UpdateClientResponse);
+  rpc SetClientStatus(SetClientStatusRequest) returns (SetClientStatusResponse);
+  rpc DeleteClient(DeleteClientRequest) returns (DeleteClientResponse);
+  rpc ListClientURIs(ListClientURIsRequest) returns (ListClientURIsResponse);
+  rpc CreateClientURI(CreateClientURIRequest) returns (CreateClientURIResponse);
+  rpc UpdateClientURI(UpdateClientURIRequest) returns (UpdateClientURIResponse);
+  rpc DeleteClientURI(DeleteClientURIRequest) returns (DeleteClientURIResponse);
+  rpc ListClientAPIs(ListClientAPIsRequest) returns (ListClientAPIsResponse);
+  rpc AddClientAPIs(AddClientAPIsRequest) returns (AddClientAPIsResponse);
+  rpc RemoveClientAPI(RemoveClientAPIRequest) returns (RemoveClientAPIResponse);
+  rpc ListClientAPIPermissions(ListClientAPIPermissionsRequest) returns (ListClientAPIPermissionsResponse);
+  rpc AddClientAPIPermissions(AddClientAPIPermissionsRequest) returns (AddClientAPIPermissionsResponse);
+  rpc RemoveClientAPIPermission(RemoveClientAPIPermissionRequest) returns (RemoveClientAPIPermissionResponse);
+}
+
+message Client {
+  string client_id = 1;
+  string name = 2;
+  string display_name = 3;
+  string client_type = 4;
+  string domain = 5;
+  string status = 6;
+  bool is_default = 7;
+  bool is_system = 8;
+  ClientIdentityProvider identity_provider = 9;
+  repeated ClientURI uris = 10;
+  google.protobuf.Timestamp created_at = 11;
+  google.protobuf.Timestamp updated_at = 12;
+  string branding_id = 13;
+  bool allow_registration = 14;
+  // The UUID of the service this client is bound to (absent when unbound).
+  // Exposed so a get-or-create caller can converge on the existing client: without
+  // it the caller cannot tell a bound credential from an unbound one and would
+  // re-bind (or duplicate) on every reconcile pass.
+  optional string service_id = 15;
+}
+
+message ClientIdentityProvider {
+  string identity_provider_id = 1;
+  string name = 2;
+  string display_name = 3;
+  string provider = 4;
+  string provider_type = 5;
+  string identifier = 6;
+  string status = 7;
+  bool is_default = 8;
+  bool is_system = 9;
+  google.protobuf.Timestamp created_at = 10;
+  google.protobuf.Timestamp updated_at = 11;
+}
+
+message ClientURI {
+  string client_uri_id = 1;
+  string uri = 2;
+  string type = 3;
+  google.protobuf.Timestamp created_at = 4;
+  google.protobuf.Timestamp updated_at = 5;
+}
+
+message ClientAPI {
+  string client_api_id = 1;
+  ClientAPIDetail api = 2;
+  repeated ClientAPIPermission permissions = 3;
+  google.protobuf.Timestamp created_at = 4;
+}
+
+message ClientAPIDetail {
+  string api_id = 1;
+  string name = 2;
+  string display_name = 3;
+  string description = 4;
+  string status = 5;
+  bool is_system = 6;
+  google.protobuf.Timestamp created_at = 7;
+  google.protobuf.Timestamp updated_at = 8;
+}
+
+message ClientAPIPermission {
+  string permission_id = 1;
+  string name = 2;
+  string description = 3;
+  string status = 4;
+  reserved 5;
+  bool is_system = 6;
+  google.protobuf.Timestamp created_at = 7;
+  google.protobuf.Timestamp updated_at = 8;
+}
+
+message ListClientsRequest {
+  string tenant_id = 1;
+  string name = 2;
+  string display_name = 3;
+  repeated string client_type = 4;
+  string identity_provider_id = 5;
+  repeated string status = 6;
+  optional bool is_default = 7;
+  optional bool is_system = 8;
+  Pagination pagination = 9;
+}
+
+message ListClientsResponse {
+  repeated Client clients = 1;
+  PageMetadata page = 2;
+}
+
+message GetClientRequest {
+  string tenant_id = 1;
+  string client_id = 2;
+}
+
+message GetClientResponse {
+  Client client = 1;
+}
+
+message GetClientSecretRequest {
+  string tenant_id = 1;
+  string client_id = 2;
+}
+
+message GetClientSecretResponse {
+  string oauth_client_id = 1;
+  string message = 2;
+}
+
+message RotateClientSecretRequest {
+  string tenant_id = 1;
+  string client_id = 2;
+  string actor_user_id = 3;
+  int32 grace_period_hours = 4;
+}
+
+message RotateClientSecretResponse {
+  string client_secret = 1;
+  string previous_secret_expires_at = 2;
+}
+
+message GetClientConfigRequest {
+  string tenant_id = 1;
+  string client_id = 2;
+}
+
+message GetClientConfigResponse {
+  google.protobuf.Struct config = 1;
+}
+
+message CreateClientRequest {
+  string tenant_id = 1;
+  string name = 2;
+  string display_name = 3;
+  string client_type = 4;
+  string domain = 5;
+  google.protobuf.Struct config = 6;
+  string status = 7;
+  string identity_provider_id = 8;
+  string actor_user_id = 9;
+  string branding_id = 10;
+  optional bool allow_registration = 11;
+
+  // NOTE: machine-client credentials (token_endpoint_auth_method, jwks,
+  // jwks_uri) are NOT separate fields here. They travel inside `config`, which
+  // applyConfigToClientColumns already maps onto the columns — including the
+  // RFC 7591 §2 rule that jwks and jwks_uri are mutually exclusive. Adding
+  // dedicated fields would create a second way to set the same thing, and two
+  // sources of truth for a verification key is precisely how the wrong key ends
+  // up deciding who may authenticate.
+
+  // Binds the new client to a service principal so the tokens it mints carry the
+  // `svc` claim — the principal the policy bundle and the gRPC authorizer
+  // resolve. It is a privilege grant, so the server enforces that the service is
+  // in the SAME tenant, ACTIVE, and that the client is m2m (a public client
+  // cannot keep a credential; a traditional client is a user-facing app).
+  optional string service_id = 12;
+}
+
+message CreateClientResponse {
+  Client client = 1;
+  ClientCredentials credentials = 2;
+}
+
+message ClientCredentials {
+  string client_id = 1;
+  string oauth_client_id = 2;
+  string client_secret = 3;
+}
+
+message UpdateClientRequest {
+  string tenant_id = 1;
+  string client_id = 2;
+  string name = 3;
+  string display_name = 4;
+  string client_type = 5;
+  string domain = 6;
+  google.protobuf.Struct config = 7;
+  string status = 8;
+  string actor_user_id = 9;
+  string branding_id = 10;
+  optional bool allow_registration = 11;
+
+  // Service binding (see CreateClientRequest). Absent = leave the binding
+  // unchanged; an explicit EMPTY string = unbind. The same tenant/active/m2m
+  // rules are enforced server-side on every change.
+  optional string service_id = 12;
+}
+
+message UpdateClientResponse {
+  Client client = 1;
+}
+
+message SetClientStatusRequest {
+  string tenant_id = 1;
+  string client_id = 2;
+  string status = 3;
+  string actor_user_id = 4;
+}
+
+message SetClientStatusResponse {
+  Client client = 1;
+}
+
+message DeleteClientRequest {
+  string tenant_id = 1;
+  string client_id = 2;
+  string actor_user_id = 3;
+}
+
+message DeleteClientResponse {
+  Client client = 1;
+}
+
+message ListClientURIsRequest {
+  string tenant_id = 1;
+  string client_id = 2;
+}
+
+message ListClientURIsResponse {
+  repeated ClientURI uris = 1;
+}
+
+message CreateClientURIRequest {
+  string tenant_id = 1;
+  string client_id = 2;
+  string uri = 3;
+  string type = 4;
+  string actor_user_id = 5;
+}
+
+message CreateClientURIResponse {
+  ClientURI uri = 1;
+}
+
+message UpdateClientURIRequest {
+  string tenant_id = 1;
+  string client_id = 2;
+  string client_uri_id = 3;
+  string uri = 4;
+  string type = 5;
+  string actor_user_id = 6;
+}
+
+message UpdateClientURIResponse {
+  ClientURI uri = 1;
+}
+
+message DeleteClientURIRequest {
+  string tenant_id = 1;
+  string client_id = 2;
+  string client_uri_id = 3;
+  string actor_user_id = 4;
+}
+
+message DeleteClientURIResponse {
+  Client client = 1;
+}
+
+message ListClientAPIsRequest {
+  string tenant_id = 1;
+  string client_id = 2;
+}
+
+message ListClientAPIsResponse {
+  repeated ClientAPI apis = 1;
+}
+
+message AddClientAPIsRequest {
+  string tenant_id = 1;
+  string client_id = 2;
+  repeated string api_ids = 3;
+  // Required. The mutation is refused without an actor holding an identity in the
+  // tenant, so a grant change is never anonymous.
+  string actor_user_id = 4;
+}
+
+message AddClientAPIsResponse {
+  string message = 1;
+}
+
+message RemoveClientAPIRequest {
+  string tenant_id = 1;
+  string client_id = 2;
+  string api_id = 3;
+  string actor_user_id = 4;
+}
+
+message RemoveClientAPIResponse {
+  string message = 1;
+}
+
+message ListClientAPIPermissionsRequest {
+  string tenant_id = 1;
+  string client_id = 2;
+  string api_id = 3;
+}
+
+message ListClientAPIPermissionsResponse {
+  repeated ClientAPIPermission permissions = 1;
+}
+
+message AddClientAPIPermissionsRequest {
+  string tenant_id = 1;
+  string client_id = 2;
+  string api_id = 3;
+  repeated string permission_ids = 4;
+  string actor_user_id = 5;
+}
+
+message AddClientAPIPermissionsResponse {
+  string message = 1;
+}
+
+message RemoveClientAPIPermissionRequest {
+  string tenant_id = 1;
+  string client_id = 2;
+  string api_id = 3;
+  string permission_id = 4;
+  string actor_user_id = 5;
+}
+
+message RemoveClientAPIPermissionResponse {
+  string message = 1;
+}
+

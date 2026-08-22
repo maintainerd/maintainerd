@@ -1,0 +1,31 @@
+syntax = "proto3";
+
+package maintainerd.auth.v1;
+
+import "google/protobuf/timestamp.proto";
+
+// Client stubs generated INTO core: after the setup window closes, core operates
+// auth through its REGULAR, permission-verified management RPCs, authenticated as
+// its m2m control client (private_key_jwt, RFC 7523). Core is a CLIENT of these
+// services and never serves them.
+//
+// Shared enums/value types for the vendored management surface.
+//
+// Kept in sync with maintainerd-auth/proto/maintainerd/auth/v1/common.proto — copy the
+// upstream file verbatim and rewrite only this go_package option.
+option go_package = "github.com/maintainerd/core/gen/maintainerd/auth/v1;authv1";
+
+enum Status {
+  STATUS_UNSPECIFIED = 0;
+  STATUS_ACTIVE = 1;
+  STATUS_INACTIVE = 2;
+  STATUS_DISABLED = 3;
+  STATUS_PENDING = 4;
+}
+
+message AuditFields {
+  google.protobuf.Timestamp created_at = 1;
+  google.protobuf.Timestamp updated_at = 2;
+  string created_by = 3;
+  string updated_by = 4;
+}

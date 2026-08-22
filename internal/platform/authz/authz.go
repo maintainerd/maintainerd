@@ -116,6 +116,12 @@ var routePermissions = map[string]perms{
 	"providers": {Read: "core:provider:read", Write: "core:provider:write"},
 	"agents":    {Read: "core:agent:read", Write: "core:agent:write"},
 	"resources": {Read: "core:resource:read", Write: "core:resource:write"},
+	// The steward surface reads and rewrites the platform's IAM wiring in Auth
+	// (services, APIs, permissions, policies, machine clients). There is no
+	// meaningful read/write split for it: seeing which principals and grants
+	// exist is as sensitive as creating them, so both verbs require the blanket
+	// admin permission.
+	"steward": {Read: "core:admin", Write: "core:admin"},
 }
 
 // setupSegment is the self-guarded first-run surface (see routePermissions).

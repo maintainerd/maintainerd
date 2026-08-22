@@ -111,8 +111,24 @@ func TestMiddlewarePutsClaimsInContext(t *testing.T) {
 func TestEverySegmentPairIsNamespaced(t *testing.T) {
 	// Permissions are namespaced core:<entity>:<read|write> — a stray
 	// un-namespaced permission would collide with another service's grants.
+	//
+	// "core:admin" is the one sanctioned exception: it is the blanket
+	// administrative grant Core registers in Auth (see setup.adminPermission),
+	// and a surface may require it on BOTH verbs when reading it is as
+	// privileged as writing it. It is still namespaced, so the collision the
+	// rule guards against cannot happen.
+	const blanketAdmin = "core:admin"
 	for seg, p := range routePermissions {
-		assert.Regexp(t, `^core:[a-z]+:read$`, p.Read, "segment %s", seg)
-		assert.Regexp(t, `^core:[a-z]+:write$`, p.Write, "segment %s", seg)
+		if p.Read != blanketAdmin {
+			assert.Regexp(t, `^core:[a-z]+:read$`, p.Read, "segment %s", seg)
+		}
+		if p.Write != blanketAdmin {
+			assert.Regexp(t, `^core:[a-z]+:write$`, p.Write, "segment %s", seg)
+		}
+		// A blanket grant is all-or-nothing: pairing it with a narrower verb
+		// permission would mean one verb silently bypasses the admin gate.
+		if p.Read == blanketAdmin || p.Write == blanketAdmin {
+			assert.Equal(t, p.Read, p.Write, "segment %s: the blanket admin grant must guard both verbs", seg)
+		}
 	}
 }

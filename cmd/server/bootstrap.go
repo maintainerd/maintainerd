@@ -105,6 +105,16 @@ func run(parent context.Context) error {
 		go application.SetupOrch.RunWithRetry(ctx)
 	}
 
+	// The post-setup control path, on EVERY boot regardless of SETUP_ENABLED.
+	// Once setup has issued Core its control identity, this converges the control
+	// catalog through Auth's regular, permission-verified RPCs — the path that
+	// stays open after CompleteSetup locks the setup window, so a service
+	// provisioned long after install still gets its IAM records. It is
+	// get-or-create throughout, so a converged install writes nothing; it is
+	// retrying and never fatal, because Auth being unreachable (or setup not
+	// having run yet) is an ordinary startup condition.
+	go application.StewardRunner.RunWithRetry(ctx)
+
 	agentCACertPEM, err := readOptionalFile("AGENT_CA_CERT_FILE", config.AgentCACertFile)
 	if err != nil {
 		return err

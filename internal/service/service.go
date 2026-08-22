@@ -187,6 +187,80 @@ func (s *Service) Delete(ctx context.Context, id uuid.UUID) error {
 	return s.q.SoftDeleteService(ctx, id)
 }
 
+// StatusRegistered is the state a capability reaches once its control-plane
+// wiring exists in Auth. It sits between 'pending' (a row inserted by setup that
+// nothing has confirmed) and the runtime states the agent reports.
+const StatusRegistered = "registered"
+
+// EnsureRegistered converges the registry row for a control-plane capability
+// under the system tenant: it creates the row when absent, and moves an existing
+// row off 'pending' to 'registered', stamping registered_at.
+//
+// It exists because the registry used to be write-once: setup inserted a row per
+// system service and nothing ever advanced it, so every capability read
+// 'pending' forever no matter how completely it was wired. The steward applier
+// calls this after an Auth-side object applies, which is the first moment the
+// claim "this capability is registered" is actually true.
+//
+// It is additive and idempotent: it never downgrades a status the agent has
+// already advanced past, and a second call on a converged row writes nothing.
+func (s *Service) EnsureRegistered(ctx context.Context, name, kind string, isSystem bool) error {
+	if name == "" || kind == "" {
+		return apperror.NewValidation("name and kind are required")
+	}
+	tenantRow, err := s.q.GetSystemTenant(ctx)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return apperror.NewNotFound("system tenant")
+	}
+	if err != nil {
+		return err
+	}
+
+	current, err := s.q.GetServiceByTenantAndName(ctx, storage.GetServiceByTenantAndNameParams{
+		TenantID: tenantRow.TenantID,
+		Name:     name,
+	})
+	if errors.Is(err, pgx.ErrNoRows) {
+		_, cerr := s.q.CreateService(ctx, storage.CreateServiceParams{
+			TenantID:     tenantRow.TenantID,
+			Name:         name,
+			Kind:         kind,
+			Status:       StatusRegistered,
+			Endpoint:     "",
+			Version:      "",
+			Metadata:     []byte("{}"),
+			RegisteredAt: pgtype.Timestamptz{Time: time.Now(), Valid: true},
+			IsSystem:     isSystem,
+		})
+		return cerr
+	}
+	if err != nil {
+		return err
+	}
+
+	// Only 'pending' is advanced. A row the agent has already moved to a runtime
+	// state is further along than this call knows about, and rewriting it would
+	// be a reconcile loop overwriting live observation with stale intent.
+	if current.Status != "pending" && current.RegisteredAt.Valid {
+		return nil
+	}
+	status := current.Status
+	if status == "pending" {
+		status = StatusRegistered
+	}
+	registeredAt := current.RegisteredAt
+	if !registeredAt.Valid {
+		registeredAt = pgtype.Timestamptz{Time: time.Now(), Valid: true}
+	}
+	_, err = s.q.UpdateServiceStatus(ctx, storage.UpdateServiceStatusParams{
+		ServiceUuid:  current.ServiceUuid,
+		Status:       status,
+		Endpoint:     current.Endpoint,
+		RegisteredAt: registeredAt,
+	})
+	return err
+}
+
 // ListSystem returns the platform's system services — the ones Core must keep
 // running at all times. The keep-alive reconciler consumes this feed.
 func (s *Service) ListSystem(ctx context.Context) ([]Registration, error) {
