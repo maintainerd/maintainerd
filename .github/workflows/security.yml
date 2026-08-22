@@ -174,6 +174,23 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
+      # go.mod replaces the sibling modules with workspace-local paths, which do
+      # not exist on a runner. Without these checkouts govulncheck cannot load
+      # the package graph at all and fails before scanning anything.
+      - name: Check out sibling deps
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: maintainerd/maintainerd-kit
+          path: .deps/kit
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: maintainerd/maintainerd-sdk
+          path: .deps/sdk
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: maintainerd/maintainerd-secret
+          path: .deps/secret
+
       - name: Set up Go
         uses: actions/setup-go@44694675825211faa026b3c33043df3e48a5fa00 # v6.0.0
         with:
@@ -181,6 +198,12 @@ jobs:
           # bumping the `go` directive — the same lever that fixes it locally.
           go-version-file: go.mod
           cache: true
+
+      - name: Repoint replaces at checked-out siblings
+        run: |
+          go mod edit -replace github.com/maintainerd/kit=./.deps/kit
+          go mod edit -replace github.com/maintainerd/sdk=./.deps/sdk
+          go mod edit -replace github.com/maintainerd/secret=./.deps/secret
 
       - name: Run govulncheck
         # Fails the build on any CALLED vulnerability. Findings that exist in the
