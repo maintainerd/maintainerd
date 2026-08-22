@@ -9,6 +9,7 @@ package authz
 import (
 	"context"
 	"net/http"
+	"sort"
 	"strings"
 
 	sdkauth "github.com/maintainerd/sdk/auth"
@@ -129,6 +130,50 @@ var routePermissions = map[string]perms{
 	// exist is as sensitive as creating them, so both verbs require the blanket
 	// admin permission.
 	"steward": {Read: "core:admin", Write: "core:admin"},
+}
+
+// GatewayPermission is what an agent principal must carry to reach the agent
+// gateway's gRPC methods (see internal/grpcserver). It is a gRPC surface rather
+// than a route, so it is absent from routePermissions above — but it is Core's
+// permission and Core must register it in Auth.
+const GatewayPermission = "core:agent:gateway"
+
+// DeclaredPermissions returns every permission Core's surfaces can demand: the
+// route pairs above plus the agent-gateway permission.
+//
+// Setup registers exactly this list in Auth as Core's resource-API permissions.
+// It MUST be derived from routePermissions rather than hand-listed at the
+// registration site: enforcement and registration are two halves of one fact,
+// and when they drift the failure is silent and total — the middleware demands
+// a permission that exists nowhere in Auth, so no token can ever carry it and
+// every route answers 403 regardless of who calls. Deriving it here means
+// adding a segment to the map registers its permissions automatically.
+func DeclaredPermissions() []string {
+	seen := make(map[string]struct{}, len(routePermissions)*2+1)
+	out := make([]string, 0, len(routePermissions)*2+1)
+	add := func(p string) {
+		if p == "" {
+			return
+		}
+		if _, dup := seen[p]; dup {
+			return
+		}
+		seen[p] = struct{}{}
+		out = append(out, p)
+	}
+	// Sorted: map iteration is randomised, and a permission list that reorders
+	// every boot makes setup logs and diffs unreadable.
+	segments := make([]string, 0, len(routePermissions))
+	for segment := range routePermissions {
+		segments = append(segments, segment)
+	}
+	sort.Strings(segments)
+	for _, segment := range segments {
+		add(routePermissions[segment].Read)
+		add(routePermissions[segment].Write)
+	}
+	add(GatewayPermission)
+	return out
 }
 
 // setupSegment is the self-guarded first-run surface (see routePermissions).

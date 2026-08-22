@@ -25,6 +25,7 @@ import (
 	"google.golang.org/grpc/metadata"
 
 	authv1 "github.com/maintainerd/core/gen/maintainerd/auth/v1"
+	"github.com/maintainerd/core/internal/platform/authz"
 	"github.com/maintainerd/core/internal/resource"
 	"github.com/maintainerd/core/internal/service"
 	"github.com/maintainerd/core/internal/storage"
@@ -297,15 +298,35 @@ func (o *Orchestrator) RunWith(ctx context.Context, in RunInput) (*Result, error
 	// re-runnable once Auth enforcement is turned on.
 
 	// 4. Core's own resource API (audience) + its permissions.
+	//
+	// The permission list is DERIVED from the authz middleware's route map
+	// (authz.DeclaredPermissions) rather than written out here. Registration and
+	// enforcement are two halves of one fact: if this list omits a permission the
+	// middleware demands, no token can ever carry it and that route answers 403
+	// to everyone — a total, silent outage of the surface. Deriving it means a new
+	// guarded route registers its own permissions.
+	corePermissions := authz.DeclaredPermissions()
+	apiPermissions := make([]*authv1.EnsureResourceAPIPermission, 0, len(corePermissions)+1)
+	apiPermissions = append(apiPermissions, &authv1.EnsureResourceAPIPermission{
+		Name:        "core:admin",
+		Description: "Full administrative access to Maintainerd Core",
+	})
+	for _, perm := range corePermissions {
+		if perm == "core:admin" {
+			continue
+		}
+		apiPermissions = append(apiPermissions, &authv1.EnsureResourceAPIPermission{
+			Name:        perm,
+			Description: "Maintainerd Core: " + perm,
+		})
+	}
 	if api, err := cli.EnsureResourceAPI(actx, &authv1.EnsureResourceAPIRequest{
 		ServiceName:        o.cfg.CoreServiceName,
 		ServiceDisplayName: "Maintainerd Core",
 		Name:               "Maintainerd Core API",
 		DisplayName:        "Maintainerd Core API",
 		Identifier:         o.cfg.CoreAudience,
-		Permissions: []*authv1.EnsureResourceAPIPermission{
-			{Name: "core:admin", Description: "Full administrative access to Maintainerd Core"},
-		},
+		Permissions:        apiPermissions,
 	}); err != nil {
 		slog.Warn("core setup: EnsureResourceAPI failed (non-fatal)", "err", err)
 	} else {
@@ -313,12 +334,21 @@ func (o *Orchestrator) RunWith(ctx context.Context, in RunInput) (*Result, error
 		res.ResourceAPIIdentifier = api.GetIdentifier()
 	}
 
-	// 5. The core-admin role (registered for reuse; the admin gets full access via
-	// the built-in super-admin role CreateAdmin grants).
+	// 5. The core-admin role. It carries every Core permission, not just
+	// core:admin: the middleware matches permissions exactly and grants no
+	// bypass to an admin permission, so a role holding core:admin alone could
+	// not read a single guarded route.
+	adminRolePermissions := make([]string, 0, len(corePermissions)+1)
+	adminRolePermissions = append(adminRolePermissions, "core:admin")
+	for _, perm := range corePermissions {
+		if perm != "core:admin" {
+			adminRolePermissions = append(adminRolePermissions, perm)
+		}
+	}
 	if role, err := cli.EnsureRole(actx, &authv1.EnsureRoleRequest{
 		Name:            "core-admin",
 		Description:     "Full access to Maintainerd Core",
-		PermissionNames: []string{"core:admin"},
+		PermissionNames: adminRolePermissions,
 	}); err != nil {
 		slog.Warn("core setup: EnsureRole failed (non-fatal)", "err", err)
 	} else {
