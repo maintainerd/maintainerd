@@ -187,7 +187,8 @@ func run(parent context.Context) error {
 	g, gctx := errgroup.WithContext(ctx)
 	g.Go(func() error {
 		return appserver.StartRESTServer(gctx, appserver.Router(application, httpGuard,
-			readinessChecks(pool, depend, httpGuard, application.SecretClient, application.SecretSetupOrch)))
+			readinessChecks(pool, depend, httpGuard, application.SecretClient, application.SecretSetupOrch),
+			capabilityInfo(application.SetupOrch)))
 	})
 	g.Go(func() error {
 		return grpcserver.Serve(gctx, grpcListenAddr(), gateway, grpcGuard, grpcserver.TLSOptions{
@@ -198,6 +199,42 @@ func run(parent context.Context) error {
 		})
 	})
 	return g.Wait()
+}
+
+// capabilityInfo assembles what GET /api/v1/capabilities reports about this
+// process. Every value is already core's own configuration or a value core's own
+// setup created; nothing new is read and nothing is fetched.
+//
+// The authorize page is the one field that may be absent on a working install:
+// it lives on the identity APP, not on the issuer, and core has no default it
+// could invent (see CapabilityInfo.AuthAuthorizeEndpoint). Set
+// APP_FRONTEND_IDENTITY_HOSTNAME to publish it.
+func capabilityInfo(orch *setup.Orchestrator) appserver.CapabilityInfo {
+	info := appserver.CapabilityInfo{
+		Version:               config.AppVersion,
+		AuthIssuer:            config.AuthIssuer,
+		AuthAudience:          config.AuthAudience,
+		AuthTokenEndpoint:     config.AuthTokenURL,
+		AuthAuthorizeEndpoint: authorizePageURL(config.AppFrontendIdentityHostname),
+	}
+	// Assigned conditionally: a typed nil stored in the interface is NOT nil, so
+	// the handler's nil check would pass and the first probe would panic on a
+	// nil receiver.
+	if orch != nil {
+		info.Setup = orch
+	}
+	return info
+}
+
+// authorizePageURL builds the identity app's authorize page from its origin,
+// returning "" when the origin is unset so the field is omitted rather than
+// published as a bare "/authorize".
+func authorizePageURL(identityOrigin string) string {
+	origin := strings.TrimRight(strings.TrimSpace(identityOrigin), "/")
+	if origin == "" {
+		return ""
+	}
+	return origin + "/authorize"
 }
 
 func readOptionalFile(label, path string) ([]byte, error) {

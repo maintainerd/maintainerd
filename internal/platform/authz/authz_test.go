@@ -80,6 +80,69 @@ func TestMiddlewareSetupSurfaceBypasses(t *testing.T) {
 	}
 }
 
+// TestUnauthenticatedSurfaceIsExactly is the tripwire on core's unguarded
+// surface. It fails on an ADDITION as loudly as on a substitution, because
+// adding a segment here is adding a route anyone on the network can call: the
+// diff that widens this map is the diff that has to carry the argument for why
+// the new surface is UNAUTHENTICATABLE rather than merely inconvenient to
+// authenticate.
+//
+// /healthz and /readyz are not in the map — they are mounted outside the
+// /api/v1 group this middleware wraps (internal/server.Router), so they are
+// exempt by construction. Their contents are pinned by internal/server tests.
+func TestUnauthenticatedSurfaceIsExactly(t *testing.T) {
+	assert.Equal(t, map[string][]string{
+		"setup":        nil,
+		"capabilities": {http.MethodGet, http.MethodHead},
+	}, exemptSegments)
+
+	// No exempt segment may also be in the permission map: an entry in both
+	// would look guarded while being served open.
+	for segment := range exemptSegments {
+		_, mapped := routePermissions[segment]
+		assert.False(t, mapped, "segment %s cannot be both exempt and permission-mapped", segment)
+	}
+}
+
+// TestMiddlewareCapabilityProbeBypasses: the probe answers the questions a caller
+// must settle BEFORE it can hold a token, so it must be reachable in every mode
+// — including Unavailable, where every other route is 503 and the console has
+// nothing else to read the posture from.
+func TestMiddlewareCapabilityProbeBypasses(t *testing.T) {
+	for _, g := range []Guard{
+		{Mode: ModeEnforced, Verify: staticVerify(nil, errors.New("no tokens exist yet"))},
+		{Mode: ModeUnavailable, Reason: "missing AUTH_JWKS_URL"},
+		{Mode: ModeDevOpen},
+	} {
+		for _, method := range []string{http.MethodGet, http.MethodHead} {
+			rec, ran := do(t, g, method, "/api/v1/capabilities", "")
+			assert.Equal(t, http.StatusOK, rec.Code, "%s in mode %v", method, g.Mode)
+			assert.True(t, ran)
+		}
+	}
+}
+
+// The exemption is READ-only: a mutating verb is not exempt, so a write surface
+// mounted under this path later fails closed against the allowlist instead of
+// inheriting the exemption.
+func TestMiddlewareCapabilityProbeExemptsReadsOnly(t *testing.T) {
+	g := Guard{Mode: ModeEnforced, Verify: staticVerify(&Claims{Subject: "u", Permissions: []string{"core:admin"}}, nil)}
+	for _, method := range []string{http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete} {
+		rec, ran := do(t, g, method, "/api/v1/capabilities", "Bearer x")
+		assert.Equal(t, http.StatusForbidden, rec.Code, "%s must not inherit the read exemption", method)
+		assert.False(t, ran)
+	}
+}
+
+func TestModeNameIsTheWireContract(t *testing.T) {
+	// These strings are published by GET /api/v1/capabilities and parsed by the
+	// console; they are deliberately not the Go constant names.
+	assert.Equal(t, "enforced", ModeEnforced.Name())
+	assert.Equal(t, "dev-open", ModeDevOpen.Name())
+	assert.Equal(t, "unavailable", ModeUnavailable.Name())
+	assert.Equal(t, "unknown", Mode(99).Name())
+}
+
 func TestMiddlewareUnavailableFailsClosed(t *testing.T) {
 	g := Guard{Mode: ModeUnavailable, Reason: "missing AUTH_JWKS_URL, AUTH_ISSUER"}
 	rec, ran := do(t, g, http.MethodGet, "/api/v1/tenants", "Bearer would-be-valid")

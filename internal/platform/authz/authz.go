@@ -86,6 +86,33 @@ const (
 	ModeUnavailable
 )
 
+// Name renders the guard's posture as a stable string a client can branch on.
+// The capability probe publishes it (internal/server/capabilities.go).
+//
+// The strings are that API's contract and are deliberately NOT the Go constant
+// names: a client parsing them must not break because a constant was renamed.
+// "unavailable" is reported as itself rather than folded into "enforced" — they
+// are different states with different correct client behaviour (obtain a token
+// vs. wait, this replica cannot verify one).
+//
+// The gRPC AgentGateway guard has its OWN ladder and its own spelling
+// (internal/grpcserver: enforced / dev-open / health-only). It is not shared with
+// this one because the third state differs in kind — HTTP 503s every guarded
+// route, gRPC does not register the service at all — which is precisely why the
+// capability payload names the transport it is describing.
+func (m Mode) Name() string {
+	switch m {
+	case ModeEnforced:
+		return "enforced"
+	case ModeDevOpen:
+		return "dev-open"
+	case ModeUnavailable:
+		return "unavailable"
+	default:
+		return "unknown"
+	}
+}
+
 // Guard is the resolved HTTP-auth posture, decided at startup by the
 // bootstrap (see cmd/server).
 type Guard struct {
@@ -106,10 +133,10 @@ type perms struct {
 // token, so mounting a new router without deciding its permissions fails
 // closed instead of shipping an open surface.
 //
-// "setup" is deliberately absent AND special-cased in Middleware: the setup
-// surface must work before Auth exists (it is what provisions Auth), so it is
-// self-guarded by CORE_SETUP_TOKEN in the setup handler instead of by tokens
-// no one can mint yet.
+// "setup" and "capabilities" are deliberately absent here and declared instead
+// in exemptSegments below, which carries the argument for each: both surfaces
+// have to answer BEFORE Auth-minted tokens exist, so neither can be guarded by
+// one.
 var routePermissions = map[string]perms{
 	"tenants":   {Read: "core:tenant:read", Write: "core:tenant:write"},
 	"projects":  {Read: "core:project:read", Write: "core:project:write"},
@@ -176,8 +203,61 @@ func DeclaredPermissions() []string {
 	return out
 }
 
-// setupSegment is the self-guarded first-run surface (see routePermissions).
-const setupSegment = "setup"
+// setupSegment is the self-guarded first-run surface and capabilitiesSegment the
+// anonymous capability probe (see exemptSegments).
+const (
+	setupSegment        = "setup"
+	capabilitiesSegment = "capabilities"
+)
+
+// exemptSegments is the COMPLETE unguarded surface under /api/v1: the segments
+// Middleware serves with no token at all, mapped to the methods each exemption
+// covers (nil = every method). Nothing is exempt for convenience; every entry
+// carries its argument.
+//
+//	setup         must work BEFORE Auth exists — provisioning Auth is what makes
+//	              tokens mintable at all — so it is self-guarded inside the
+//	              handler by CORE_SETUP_TOKEN, compared in constant time, and its
+//	              anonymous /status branch discloses a single boolean
+//	              (internal/setup.slimStatus). Every method, because the wizard
+//	              POSTs.
+//	capabilities  answers the questions a caller must settle BEFORE it can hold a
+//	              token — is the HTTP guard enforced or open, is this install
+//	              provisioned, and when enforced which issuer, audience, token
+//	              endpoint and console client id a browser needs for PKCE — so
+//	              requiring a token to ask them is circular. It is exempt because
+//	              it is UNAUTHENTICATABLE, not because it is convenient. What it
+//	              discloses is bounded to facts an anonymous caller could already
+//	              obtain from the port it is talking to; the field-by-field
+//	              argument is in internal/server/capabilities.go. READ METHODS
+//	              ONLY: a mutating verb on this path is not exempt, so any future
+//	              write surface mounted under it fails closed against
+//	              routePermissions instead of inheriting this exemption.
+//
+// /healthz and /readyz are the other two unauthenticated routes. They are
+// mounted OUTSIDE the /api/v1 group this middleware wraps (internal/server), so
+// they are exempt by construction rather than by declaration.
+var exemptSegments = map[string][]string{
+	setupSegment:        nil,
+	capabilitiesSegment: {http.MethodGet, http.MethodHead},
+}
+
+// exempt reports whether this segment+method is served with no guard at all.
+func exempt(segment, method string) bool {
+	methods, declared := exemptSegments[segment]
+	if !declared {
+		return false
+	}
+	if methods == nil {
+		return true
+	}
+	for _, m := range methods {
+		if m == method {
+			return true
+		}
+	}
+	return false
+}
 
 type ctxKey struct{}
 
@@ -193,9 +273,9 @@ func FromContext(ctx context.Context) (*Claims, bool) {
 func (g Guard) Middleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		segment := apiSegment(r.URL.Path)
-		// The setup surface guards itself (CORE_SETUP_TOKEN) — see the
-		// routePermissions doc for why it cannot be token-guarded.
-		if segment == setupSegment {
+		// The unguarded surface — see exemptSegments for why each entry cannot
+		// be token-guarded.
+		if exempt(segment, r.Method) {
 			next.ServeHTTP(w, r)
 			return
 		}

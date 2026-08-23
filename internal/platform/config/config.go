@@ -200,6 +200,14 @@ var (
 	// system tenant uses the bare host. Per-tenant URLs are derived via
 	// shared.FrontendURL, which normalizes any scheme to https; do not build
 	// tenant hosts by string-concatenating these values directly.
+	//
+	// AppFrontendIdentityHostname is ALSO the only thing core knows the browser
+	// authorization page from, and GET /api/v1/capabilities publishes it as
+	// auth.authorize_endpoint. It cannot be derived from AUTH_ISSUER: Auth's
+	// discovery document advertises issuer + "/api/v1/oauth/authorize", but that
+	// route answers JSON rather than redirecting a browser — the page is served by
+	// the identity app on THIS host. Unset means the field is omitted and the
+	// operator console has to keep its own configured origin.
 	AppFrontendIdentityHostname string
 	AppFrontendConsoleHostname  string
 
@@ -409,7 +417,9 @@ func Init() error {
 		return fmt.Errorf("AGENT_CERT_TTL must be positive (got %s)", AgentCertTTL)
 	}
 
-	// Frontend Config (optional — auth-era; unused by the core control plane).
+	// Frontend Config (both optional). APP_FRONTEND_IDENTITY_HOSTNAME is read by
+	// the capability probe (see its declaration); the console hostname is still
+	// auth-era and unused here.
 	AppFrontendIdentityHostname = GetEnvOrDefault("APP_FRONTEND_IDENTITY_HOSTNAME", "")
 	AppFrontendConsoleHostname = GetEnvOrDefault("APP_FRONTEND_CONSOLE_HOSTNAME", "")
 

@@ -38,8 +38,10 @@ const readinessTimeout = 5 * time.Second
 
 // Router builds the core HTTP API. Every route under /api/v1 is behind the
 // authz guard (bearer token + route→permission map, fail-closed); /healthz and
-// /readyz sit outside the group so probes need no credentials, and the setup
-// surface carries its own CORE_SETUP_TOKEN gate (see internal/setup).
+// /readyz sit outside the group so probes need no credentials, the setup
+// surface carries its own CORE_SETUP_TOKEN gate (see internal/setup), and
+// /api/v1/capabilities is anonymous by necessity (see capabilities.go and
+// authz.exemptSegments).
 //
 // TWO PROBES, ANSWERING DIFFERENT QUESTIONS.
 //
@@ -53,7 +55,7 @@ const readinessTimeout = 5 * time.Second
 // dependency that dies AFTER boot lands: core keeps running — existing workloads
 // keep running, the console still answers — and reports itself unready instead of
 // exiting. A vault blip must not become a control-plane outage.
-func Router(a *app.App, guard authz.Guard, checks []ReadinessCheck) http.Handler {
+func Router(a *app.App, guard authz.Guard, checks []ReadinessCheck, caps CapabilityInfo) http.Handler {
 	r := chi.NewRouter()
 	r.Use(middleware.RequestID)
 	r.Use(middleware.Recoverer)
@@ -68,6 +70,12 @@ func Router(a *app.App, guard authz.Guard, checks []ReadinessCheck) http.Handler
 
 	r.Route("/api/v1", func(r chi.Router) {
 		r.Use(guard.Middleware)
+		// Mounted INSIDE the guarded group even though the guard exempts it:
+		// keeping it here means the exemption is a single declared fact
+		// (authz.exemptSegments) rather than a second, silent one created by
+		// mounting outside the group. Registered with Get only, so a mutating
+		// verb is a 405 from chi even if the guard ever widened.
+		mountCapabilities(r, caps, guard)
 		r.Mount("/tenants", a.Tenant.Routes())
 		r.Mount("/projects", a.Project.Routes())
 		r.Mount("/services", a.Service.Routes())

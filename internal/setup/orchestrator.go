@@ -567,6 +567,26 @@ func (o *Orchestrator) Status(ctx context.Context) (completed bool, res *Result)
 	return !res.CompletedAt.IsZero(), res
 }
 
+// ConsoleIdentity reports whether setup completed and, if so, the PUBLIC OAuth
+// client id it registered for the operator console (step 6 of RunWith).
+//
+// It returns that one id rather than the *Result Status hands back: the caller is
+// the anonymous capability probe (internal/server/capabilities.go), and the
+// Result also carries the auth tenant uuid, the control-plane client ids and the
+// signing JWKS. Narrowing the seam here means that probe cannot leak one of
+// those — including after a field is added to Result later.
+//
+// An incomplete setup returns ("", false) even if a partial run already recorded
+// a console client: the console must not start a PKCE flow against an install
+// whose Auth side has not been locked in.
+func (o *Orchestrator) ConsoleIdentity(ctx context.Context) (complete bool, consoleOAuthClientID string) {
+	res := o.loadPersisted(ctx)
+	if res.CompletedAt.IsZero() {
+		return false, ""
+	}
+	return true, res.ConsoleOAuthClientID
+}
+
 // RunWithRetry keeps attempting Run until it succeeds or ctx is cancelled —
 // Auth may not be reachable the moment Core boots.
 func (o *Orchestrator) RunWithRetry(ctx context.Context) {

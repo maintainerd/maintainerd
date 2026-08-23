@@ -47,6 +47,55 @@ func TestGuardResolutionFailsClosed(t *testing.T) {
 	})
 }
 
+// TestGuardLaddersDiverge is why GET /api/v1/capabilities names the transport it
+// is describing. The two guards are resolved independently from one verifier and
+// their third states are not the same state: with no auth config in production
+// the HTTP guard is "unavailable" (503 on every guarded route) while the
+// AgentGateway is health-only (the service does not register at all). No single
+// guard_mode value can honestly describe the process.
+func TestGuardLaddersDiverge(t *testing.T) {
+	setAuthVars(t, "", "", "")
+
+	assert.Equal(t, "unavailable", resolveHTTPGuard(nil, false).Mode.Name())
+	assert.Equal(t, grpcserver.GuardHealthOnly, resolveGRPCGuard(nil, false).Mode,
+		"the gRPC ladder has no 'unavailable' — the capability payload must not imply it does")
+}
+
+// TestCapabilityInfoSourcesEveryValueFromCore pins that the probe publishes core's
+// OWN configuration rather than anything hand-set on the console, and that the
+// browser authorize page is omitted when core has no identity-app origin to
+// publish (it is NOT derivable from the issuer — see authorizePageURL).
+func TestCapabilityInfoSourcesEveryValueFromCore(t *testing.T) {
+	setAuthVars(t, "http://auth:8081/.well-known/jwks.json",
+		"https://identity-api.auth.example.test", "https://core.example.test")
+
+	prevToken, prevIdentity, prevVersion := config.AuthTokenURL, config.AppFrontendIdentityHostname, config.AppVersion
+	t.Cleanup(func() {
+		config.AuthTokenURL, config.AppFrontendIdentityHostname, config.AppVersion = prevToken, prevIdentity, prevVersion
+	})
+	config.AuthTokenURL = "https://identity-api.auth.example.test/api/v1/oauth/token"
+	config.AppFrontendIdentityHostname = "https://identity.auth.example.test/"
+	config.AppVersion = "v9.9.9"
+
+	info := capabilityInfo(nil)
+	assert.Equal(t, "v9.9.9", info.Version)
+	assert.Equal(t, "https://identity-api.auth.example.test", info.AuthIssuer)
+	assert.Equal(t, "https://core.example.test", info.AuthAudience)
+	assert.Equal(t, "https://identity-api.auth.example.test/api/v1/oauth/token", info.AuthTokenEndpoint)
+	assert.Equal(t, "https://identity.auth.example.test/authorize", info.AuthAuthorizeEndpoint)
+
+	config.AppFrontendIdentityHostname = ""
+	assert.Empty(t, capabilityInfo(nil).AuthAuthorizeEndpoint,
+		"with no identity-app origin the field must be omitted, not guessed from the issuer")
+}
+
+func TestAuthorizePageURL(t *testing.T) {
+	assert.Equal(t, "https://identity.example.test/authorize", authorizePageURL("https://identity.example.test"))
+	assert.Equal(t, "https://identity.example.test/authorize", authorizePageURL(" https://identity.example.test// "))
+	assert.Empty(t, authorizePageURL(""))
+	assert.Empty(t, authorizePageURL("   "))
+}
+
 func TestMissingAuthVars(t *testing.T) {
 	setAuthVars(t, "", "https://auth", "aud")
 	assert.Equal(t, []string{"AUTH_JWKS_URL"}, missingAuthVars())
