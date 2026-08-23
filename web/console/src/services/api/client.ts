@@ -16,6 +16,20 @@ import axios, { type AxiosError, type AxiosRequestConfig } from 'axios'
 import { API_CONFIG } from './config'
 import { clearAccessToken, getAccessToken } from '@/auth/tokenStore'
 
+/**
+ * Per-request options this client understands on top of axios's own.
+ *
+ * `skipSessionRecovery` marks a request whose 401 is NOT a dead session. The
+ * setup surface authenticates with a bootstrap token (`X-Setup-Token`) instead of
+ * a bearer, so a 401 from it means THAT token is wrong. Letting it reach the
+ * recovery path would clear a bearer the operator may not even hold and navigate
+ * the browser away from the wizard — the one screen that can fix the failure. It
+ * suppresses only the recovery; the caller still receives its ApiError.
+ */
+export interface RequestConfig extends AxiosRequestConfig {
+  skipSessionRecovery?: boolean
+}
+
 // Custom error class
 export class ApiError extends Error {
   public status: number
@@ -133,7 +147,9 @@ axiosInstance.interceptors.response.use(
       // re-authorization — handled by AuthProvider, which can do it silently
       // while the SSO session is still alive, and which reports a dead end
       // instead of redirecting when it cannot.
-      if (status === 401) {
+      //
+      // Unless the caller opted out: see `RequestConfig.skipSessionRecovery`.
+      if (status === 401 && !(error.config as RequestConfig | undefined)?.skipSessionRecovery) {
         clearAccessToken()
         if (onUnauthenticated && !reauthStarted) {
           reauthStarted = true
@@ -177,7 +193,7 @@ axiosInstance.interceptors.response.use(
 )
 
 /** HTTP GET */
-export async function get<T>(endpoint: string, config?: AxiosRequestConfig): Promise<T> {
+export async function get<T>(endpoint: string, config?: RequestConfig): Promise<T> {
   const response = await axiosInstance.get<T>(endpoint, config)
   return response.data || ({ success: true, message: 'Request completed successfully' } as T)
 }
@@ -186,25 +202,25 @@ export async function get<T>(endpoint: string, config?: AxiosRequestConfig): Pro
  * HTTP POST — defaults the body to `{}` so axios keeps the JSON Content-Type
  * header (it strips it when there is no body), which the backend requires.
  */
-export async function post<T>(endpoint: string, data?: unknown, config?: AxiosRequestConfig): Promise<T> {
+export async function post<T>(endpoint: string, data?: unknown, config?: RequestConfig): Promise<T> {
   const response = await axiosInstance.post<T>(endpoint, data ?? {}, config)
   return response.data || ({ success: true, message: 'Request completed successfully' } as T)
 }
 
 /** HTTP PUT — defaults the body to `{}` (see `post`). */
-export async function put<T>(endpoint: string, data?: unknown, config?: AxiosRequestConfig): Promise<T> {
+export async function put<T>(endpoint: string, data?: unknown, config?: RequestConfig): Promise<T> {
   const response = await axiosInstance.put<T>(endpoint, data ?? {}, config)
   return response.data || ({ success: true, message: 'Request completed successfully' } as T)
 }
 
 /** HTTP PATCH — defaults the body to `{}` (see `post`). */
-export async function patch<T>(endpoint: string, data?: unknown, config?: AxiosRequestConfig): Promise<T> {
+export async function patch<T>(endpoint: string, data?: unknown, config?: RequestConfig): Promise<T> {
   const response = await axiosInstance.patch<T>(endpoint, data ?? {}, config)
   return response.data || ({ success: true, message: 'Request completed successfully' } as T)
 }
 
 /** HTTP DELETE */
-export async function deleteRequest<T>(endpoint: string, config?: AxiosRequestConfig): Promise<T> {
+export async function deleteRequest<T>(endpoint: string, config?: RequestConfig): Promise<T> {
   const response = await axiosInstance.delete<T>(endpoint, config)
   return response.data || ({ success: true, message: 'Request completed successfully' } as T)
 }

@@ -133,6 +133,18 @@ export const API_CONFIG = {
   },
 } as const
 
+/**
+ * The header the setup surface's own gate reads — core's `setupTokenHeader`
+ * (internal/setup/handler.go), the HTTP twin of the `x-setup-token` gRPC metadata
+ * key Auth and Secret take the same credential in.
+ *
+ * A HEADER AND NEVER A QUERY PARAMETER. The value is core's `CORE_SETUP_TOKEN`
+ * and that endpoint creates the first tenant and admin; in a URL it would land in
+ * browser history, in the referer of every request that followed, and in every
+ * proxy access log between here and core.
+ */
+export const SETUP_TOKEN_HEADER = 'X-Setup-Token'
+
 // Core REST endpoints (paths are relative to BASE_URL = /api/v1).
 export const API_ENDPOINTS = {
   HEALTH: '/healthz',

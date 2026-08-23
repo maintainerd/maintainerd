@@ -163,6 +163,47 @@ describe('a 401 response', () => {
     await expect(apiClient.get('/tenants', { adapter: unauthorized })).rejects.toThrow(ApiError)
     expect(handler).not.toHaveBeenCalled()
   })
+
+  /**
+   * THE SETUP-WIZARD CASE. `POST /setup` authenticates with core's bootstrap token
+   * in `X-Setup-Token`, not with a bearer — the route exists to provision the Auth
+   * that would mint one. Its 401 therefore means "that setup token is wrong", and
+   * recovering the session on it would clear a bearer the operator may not even
+   * hold and navigate the browser off the wizard, the one screen that can fix it.
+   */
+  it('does not start a session recovery for a request that opted out', async () => {
+    const handler = vi.fn()
+    setUnauthenticatedHandler(handler)
+    setAccessToken(TOKEN)
+
+    await expect(
+      apiClient.post(
+        '/setup',
+        { tenant_name: 'maintainerd' },
+        {
+          adapter: respondWith(401, { success: false, error: 'missing or invalid setup token' }),
+          skipSessionRecovery: true,
+        },
+      ),
+    ).rejects.toMatchObject({ status: 401, message: 'missing or invalid setup token' })
+
+    expect(handler).not.toHaveBeenCalled()
+    expect(getAccessToken()).toBe(TOKEN)
+  })
+
+  // The opt-out is per request and must not leak: the next 401 from an ordinary
+  // endpoint still recovers the session.
+  it('still recovers the session for the next ordinary 401', async () => {
+    const handler = vi.fn()
+    setUnauthenticatedHandler(handler)
+
+    await expect(
+      apiClient.post('/setup', {}, { adapter: unauthorized, skipSessionRecovery: true }),
+    ).rejects.toThrow(ApiError)
+    await expect(apiClient.get('/tenants', { adapter: unauthorized })).rejects.toThrow(ApiError)
+
+    expect(handler).toHaveBeenCalledTimes(1)
+  })
 })
 
 describe('other failures', () => {

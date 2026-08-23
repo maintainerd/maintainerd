@@ -6,8 +6,10 @@ import { FormInputField, FormPasswordField } from '@/components/form'
 import FormSubmitButton from '@/components/form/FormSubmitButton'
 import { useRunSetup } from '@/hooks/useSetup'
 import { useToast } from '@/hooks/useToast'
+import { isSetupTokenRejected, SETUP_TOKEN_REJECTED_MESSAGE } from '@/services/api/setup'
 
 interface FormValues {
+  setup_token: string
   tenant_name: string
   tenant_display_name: string
   admin_username: string
@@ -21,6 +23,18 @@ interface FormValues {
  * First-run wizard. Collects the system tenant + the admin, then triggers Core's
  * orchestration (Core drives Auth's gRPC setup, registers itself as the control
  * service, and seeds the service registry) — everything is configured from here.
+ *
+ * IT ALSO COLLECTS THE BOOTSTRAP TOKEN. The endpoint it posts to is the one route
+ * core's bearer guard cannot cover — it provisions the Auth that would mint the
+ * bearer — so it carries its own shared-secret gate, core's `CORE_SETUP_TOKEN`.
+ * The operator sets that on core and types the same value here, which is the
+ * pattern maintainerd-auth and maintainerd-secret already use for their wizards.
+ *
+ * THE TOKEN LIVES AND DIES WITH THIS FORM. It is form state handed straight to the
+ * request as a header — never storage, never a URL, never a log — and this
+ * component only mounts before setup is complete: `SetupGate` sends /setup to
+ * /dashboard once core reports `completed`, so there is no state in which the
+ * field is on screen and the token is no longer wanted.
  */
 export default function SetupPage() {
   const navigate = useNavigate()
@@ -30,10 +44,12 @@ export default function SetupPage() {
   const {
     register,
     handleSubmit,
+    setError,
     watch,
     formState: { errors, isSubmitting },
   } = useForm<FormValues>({
     defaultValues: {
+      setup_token: '',
       tenant_name: 'maintainerd',
       tenant_display_name: 'Maintainerd',
       admin_username: 'admin',
@@ -48,17 +64,33 @@ export default function SetupPage() {
   const onSubmit = async (v: FormValues) => {
     try {
       await run.mutateAsync({
-        tenant_name: v.tenant_name,
-        tenant_display_name: v.tenant_display_name || undefined,
-        admin_username: v.admin_username,
-        admin_fullname: v.admin_fullname || undefined,
-        admin_email: v.admin_email,
-        admin_password: v.admin_password,
+        setupToken: v.setup_token,
+        body: {
+          tenant_name: v.tenant_name,
+          tenant_display_name: v.tenant_display_name || undefined,
+          admin_username: v.admin_username,
+          admin_fullname: v.admin_fullname || undefined,
+          admin_email: v.admin_email,
+          admin_password: v.admin_password,
+        },
       })
       showSuccess('Setup complete — everything is configured')
       navigate('/dashboard', { replace: true })
     } catch (e) {
+      // A refused token is reported ON the token field. The raw envelope in a
+      // toast ("missing or invalid setup token") reads as a permissions problem
+      // with the console and gives no indication that the one field the operator
+      // can act on is the one that is wrong.
+      if (isSetupTokenRejected(e)) {
+        setError('setup_token', { type: 'server', message: SETUP_TOKEN_REJECTED_MESSAGE })
+        return
+      }
       showError(e)
+    } finally {
+      // react-query keeps a SETTLED mutation's `variables` in its cache for the
+      // default gcTime, and those variables carry the setup token. Drop them the
+      // moment the call is over: the token's lifetime is this submit, not the tab's.
+      run.reset()
     }
   }
 
@@ -75,6 +107,25 @@ export default function SetupPage() {
         </div>
 
         <form onSubmit={handleSubmit(onSubmit)} className="space-y-4">
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-base font-semibold">Authorize this install</CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-5">
+              {/* FormPasswordField, not FormInputField: it masks the value and
+                  defaults autoComplete to "new-password", so no password manager
+                  offers to remember a provisioning credential. */}
+              <FormPasswordField
+                label="Setup token"
+                required
+                spellCheck={false}
+                description="Core's CORE_SETUP_TOKEN. It authorizes this one call and is not stored anywhere by the console."
+                error={errors.setup_token?.message}
+                {...register('setup_token', { required: 'The setup token is required' })}
+              />
+            </CardContent>
+          </Card>
+
           <Card>
             <CardHeader>
               <CardTitle className="text-base font-semibold">System tenant</CardTitle>
