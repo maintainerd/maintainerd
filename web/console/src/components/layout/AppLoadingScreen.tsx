@@ -4,8 +4,12 @@ import { BrandMark } from '@/components/brand/BrandMark'
 /**
  * Full-screen splash shown while a lazy route chunk loads. Brand-static — the
  * core console has no per-tenant branding.
+ *
+ * `message` names what is being waited on when the wait is not a chunk download
+ * — resolving a session, completing a sign-in — because those take a visible
+ * moment and an unlabelled spinner reads as a hang.
  */
-const AppLoadingScreen = () => {
+const AppLoadingScreen = ({ message }: { message?: string }) => {
   return (
     <div
       data-console-auth-shell
@@ -15,7 +19,7 @@ const AppLoadingScreen = () => {
         <BrandMark size={40} showTag={false} className="[&>span]:text-2xl" />
         <div className="flex items-center gap-2 text-muted-foreground">
           <Loader2 className="size-4 animate-spin" />
-          <span className="text-sm">Loading…</span>
+          <span className="text-sm">{message ? `${message}…` : 'Loading…'}</span>
         </div>
       </div>
     </div>
