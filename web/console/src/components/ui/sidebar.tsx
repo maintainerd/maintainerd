@@ -32,10 +32,37 @@ const SIDEBAR_WIDTH_MOBILE = "18rem"
 const SIDEBAR_WIDTH_ICON = "3rem"
 const SIDEBAR_KEYBOARD_SHORTCUT = "b"
 
+/**
+ * Reads the persisted collapse state, or undefined when nothing is stored.
+ *
+ * The cookie was already being WRITTEN on every toggle but never read back, so
+ * the collapse never survived a reload or any full-page navigation (the sign-in
+ * redirect is one). shadcn's reference implementation has a Next.js server
+ * component read this cookie and hand it down as `defaultOpen`; this console is a
+ * Vite SPA with no server in the render path, so the read has to happen here or
+ * not at all. Only the two literals the writer produces are accepted — anything
+ * else is treated as unset rather than coerced, so a malformed value falls back
+ * to the caller's default instead of silently collapsing the nav.
+ */
+function readPersistedSidebarOpen(): boolean | undefined {
+  if (typeof document === "undefined") return undefined
+  const match = document.cookie.match(
+    new RegExp(`(?:^|;\\s*)${SIDEBAR_COOKIE_NAME}=(true|false)(?:\\s*;|\\s*$)`)
+  )
+  if (!match) return undefined
+  return match[1] === "true"
+}
+
 type SidebarContextProps = {
   state: "expanded" | "collapsed"
   open: boolean
-  setOpen: (open: boolean) => void
+  /**
+   * Accepts an updater as well as a value. The implementation always has, and
+   * `toggleSidebar` depends on it; the signature used to advertise only the value
+   * form, which pushed consumers toward `setOpen(!open)` — the read-then-write
+   * that drops a toggle when two land in one render cycle.
+   */
+  setOpen: (open: boolean | ((open: boolean) => boolean)) => void
   openMobile: boolean
   setOpenMobile: (open: boolean) => void
   isMobile: boolean
@@ -71,11 +98,33 @@ function SidebarProvider({
 
   // This is the internal state of the sidebar.
   // We use openProp and setOpenProp for control from outside the component.
-  const [_open, _setOpen] = React.useState(defaultOpen)
+  // A previously persisted choice outranks `defaultOpen`: the default describes
+  // how the nav opens for someone who has never touched it, not a preference to
+  // reimpose on every load.
+  const [_open, _setOpen] = React.useState(
+    () => readPersistedSidebarOpen() ?? defaultOpen
+  )
   const open = openProp ?? _open
+
+  // `setOpen` must NOT close over `open`. It did, and that is a dropped toggle:
+  // two dispatches landing before the next render (a fast double-click, or a
+  // click arriving while an ancestor re-render is already in flight) both read
+  // the same captured value and compute the same result, so the second one is a
+  // no-op and the sidebar visibly refuses to move. The ref is also what keeps
+  // this callback referentially stable — the old `[setOpenProp, open]` dependency
+  // rebuilt `setOpen`, and therefore `toggleSidebar`, on every single toggle,
+  // which tore down and re-registered the window keydown listener each time.
+  const openRef = React.useRef(open)
+  openRef.current = open
+
   const setOpen = React.useCallback(
     (value: boolean | ((value: boolean) => boolean)) => {
-      const openState = typeof value === "function" ? value(open) : value
+      const openState =
+        typeof value === "function" ? value(openRef.current) : value
+      // Advanced before the re-render so a second dispatch in the same tick
+      // resolves against this decision rather than the last painted one.
+      openRef.current = openState
+
       if (setOpenProp) {
         setOpenProp(openState)
       } else {
@@ -85,7 +134,7 @@ function SidebarProvider({
       // This sets the cookie to keep the sidebar state.
       document.cookie = `${SIDEBAR_COOKIE_NAME}=${openState}; path=/; max-age=${SIDEBAR_COOKIE_MAX_AGE}`
     },
-    [setOpenProp, open]
+    [setOpenProp]
   )
 
   // Helper to toggle the sidebar.

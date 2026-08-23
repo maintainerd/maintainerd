@@ -12,14 +12,17 @@ import { SidebarTrigger } from "@/components/ui/sidebar"
 import { CoreTenantSwitcher } from "@/components/navigation/CoreTenantSwitcher"
 import { BrandMark, BrandLogo } from "@/components/brand/BrandMark"
 import { branding } from "@/lib/branding"
+import { useAuth } from "@/auth/authContext"
 import {
   Building2,
   Cpu,
   FolderKanban,
   HelpCircle,
+  LogOut,
   Plug,
   Plus,
   Server,
+  UserRound,
   BookOpen,
   Code2,
 } from "lucide-react"
@@ -31,6 +34,13 @@ const resourceLinks = [
 
 export function AppTopNav() {
   const navigate = useNavigate()
+  const { mode, signOut } = useAuth()
+
+  // The session menu is rendered only when a session actually exists to end.
+  // In `identity-missing` there is no authorize endpoint and `signOut` is a no-op,
+  // so offering it would be a control that silently does nothing; in `anonymous`
+  // this chrome is not reachable at all.
+  const hasSession = mode === "authenticated"
 
   const createItems = [
     { label: "Tenant", icon: Building2, route: "/tenants/create" },
@@ -111,6 +121,38 @@ export function AppTopNav() {
             ))}
           </DropdownMenuContent>
         </DropdownMenu>
+
+        {/* Sign-out was exposed by AuthProvider but had no surface anywhere in
+            the app, which was survivable only while core's guard was dev-open —
+            with the guard enforced, an operator who signs in has no way out and
+            no way to switch principal. No identity or profile detail is shown
+            with it: core publishes no user endpoint, so a name or email here
+            would have to be invented. */}
+        {hasSession && (
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button
+                data-console-top-profile-trigger
+                variant="ghost"
+                size="icon"
+                aria-label="Session"
+                className="bg-white/5 text-slate-300 hover:bg-white/10 hover:text-white active:!bg-white/15 active:!text-white data-[state=open]:!bg-white/15 data-[state=open]:!text-white"
+              >
+                <UserRound className="size-5" />
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent className="w-48" align="end">
+              <DropdownMenuLabel className="font-normal text-muted-foreground">
+                Session
+              </DropdownMenuLabel>
+              <DropdownMenuSeparator />
+              <DropdownMenuItem className="cursor-pointer" onClick={signOut}>
+                <LogOut className="mr-2 h-4 w-4" />
+                Sign out
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+        )}
       </div>
     </header>
   )

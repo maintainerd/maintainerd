@@ -1,4 +1,12 @@
-import { createContext, useContext, useEffect, useMemo, useState, type ReactNode } from 'react'
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useState,
+  type ReactNode,
+} from 'react'
 import { keepPreviousData, useQuery } from '@tanstack/react-query'
 import { listTenants } from '@/services/api/tenants'
 import type { Tenant } from '@/services/api/tenants/types'
@@ -56,19 +64,29 @@ export function CoreTenantProvider({ children }: { children: ReactNode }) {
     }
   }, [tenant, selected])
 
-  const setTenantUuid = (uuid: string) => {
+  const setTenantUuid = useCallback((uuid: string) => {
     setSelected(uuid)
     window.localStorage.setItem(STORAGE_KEY, uuid)
-  }
+  }, [])
 
-  const value: CoreTenantContextValue = {
-    tenantUuid: tenant?.tenant_uuid,
-    tenant,
-    tenants,
-    isLoading,
-    error: (error as Error) ?? null,
-    setTenantUuid,
-  }
+  // THIS PROVIDER SITS ABOVE THE ENTIRE SIGNED-IN TREE (ProtectedShell renders
+  // it around the router Outlet), so an unstable value here is not a local cost:
+  // a fresh object on every render invalidates the context for every consumer and
+  // re-renders the whole app shell — sidebar, brand bar, and the current page —
+  // each time this component renders for any reason, including every fetch-state
+  // tick of the tenant query. Memoizing (with a stable `setTenantUuid`) keeps
+  // those re-renders to actual scope changes.
+  const value = useMemo<CoreTenantContextValue>(
+    () => ({
+      tenantUuid: tenant?.tenant_uuid,
+      tenant,
+      tenants,
+      isLoading,
+      error: (error as Error) ?? null,
+      setTenantUuid,
+    }),
+    [tenant, tenants, isLoading, error, setTenantUuid],
+  )
 
   return <CoreTenantContext.Provider value={value}>{children}</CoreTenantContext.Provider>
 }

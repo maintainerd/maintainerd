@@ -52,6 +52,11 @@ const ServiceUnavailablePage = lazy(() => import('./pages/service-unavailable/Se
  * there is no identity to authenticate against until the control plane is
  * provisioned, and core exempts its `setup` path segment from the bearer guard
  * so the wizard is reachable without a token.
+ *
+ * The Suspense boundary here covers only the routes that render WITHOUT the app
+ * chrome (the ones above, plus ProtectedShell's own gates). Routes under
+ * PrivateLayout get their own boundary inside the layout, so a pending route
+ * chunk never blanks the sidebar — see PrivateLayout.
  */
 function App() {
   const location = useLocation()
