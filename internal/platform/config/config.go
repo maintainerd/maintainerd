@@ -52,12 +52,67 @@ var (
 	SetupWindowTTL time.Duration
 
 	// Caller authentication (the sdk verifier guarding the HTTP API and the
-	// AgentGateway). All three are required for the guards to enforce; outside
-	// development a missing value fails closed (HTTP 503 / gRPC health-only)
-	// rather than serving the control plane open. See cmd/server resolve*Guard.
+	// AgentGateway). All three are REQUIRED outside development — see
+	// validateDependencies: maintainerd-auth is a hard dependency, so a core that
+	// cannot verify a token cannot do its job, and refusing at boot beats serving
+	// 503 to every caller for the life of the process. Development permits them
+	// empty and the guards degrade to loud dev-open (cmd/server resolve*Guard).
 	AuthJWKSURL  string // AUTH_JWKS_URL  — Auth's public JWKS endpoint
 	AuthIssuer   string // AUTH_ISSUER    — expected token issuer
 	AuthAudience string // AUTH_AUDIENCE  — expected token audience (Core's API identifier)
+
+	// AuthTokenURL (AUTH_TOKEN_URL) is Auth's OAuth2 token endpoint — where core
+	// exchanges its RFC 7523 client assertion for the OUTBOUND tokens it presents
+	// to auth's management RPCs and to secret's guarded API.
+	//
+	// internal/authctrl reads this same variable through its own loader, which
+	// owns the transport settings that travel with it. It is declared here as
+	// well because the boot gate has to be able to NAME it: with no token
+	// endpoint core holds no outbound credential at all, so it belongs in the
+	// required set rather than surfacing later as a failed mint. One variable, one
+	// value, two readers — the DEPLOYMENT_MODE precedent (config +
+	// internal/setup).
+	AuthTokenURL string
+
+	// SecretBaseURL (SECRET_BASE_URL) is maintainerd-secret's HTTP origin, e.g.
+	// https://secret.example.com. REQUIRED outside development.
+	//
+	// maintainerd-secret is a hard dependency, not an integration: core
+	// provisions services, and a provisioned service's generated credentials
+	// belong in the vault rather than in a container's environment. A core that
+	// cannot reach secret cannot provision, so it refuses to start rather than
+	// come up and discover that on the first provision.
+	//
+	// It must be https outside development. A bearer token on a plaintext hop is
+	// a credential handed to the network, and this is the token that can read
+	// every secret core has written.
+	//
+	// SECRET_ENDPOINT (internal/setup) is a DIFFERENT fact: the host:port stamped
+	// into core's service registry so operators and the console know where the
+	// capability lives. This one is where THIS process sends requests.
+	SecretBaseURL string
+
+	// SecretProject / SecretEnvironment (SECRET_PROJECT, SECRET_ENVIRONMENT;
+	// both default "default") are the vault scope core writes provisioned
+	// credentials into. The defaults match the scope maintainerd-secret
+	// autocreates on a fresh install, so a stock pair of services works with
+	// neither variable set — and an operator who organizes their vault by project
+	// can point core at the right one without a code change.
+	//
+	// They are NOT security boundaries by themselves; the grants on core's
+	// outbound token are. They decide where a credential lands, which matters
+	// because an operator has to be able to find it.
+	SecretProject     string
+	SecretEnvironment string
+
+	// DependencyProbeTimeout (DEPENDENCY_PROBE_TIMEOUT, default 3s) bounds every
+	// auth/secret reachability probe — the boot gate's and /readyz's alike.
+	//
+	// Short on purpose in both directions: a boot that hangs on an unreachable
+	// dependency is indistinguishable from a wedged process, and a readiness
+	// endpoint slower than the orchestrator's own probe timeout reads as
+	// unhealthy whatever it would have answered.
+	DependencyProbeTimeout time.Duration
 
 	// CoreSetupToken (CORE_SETUP_TOKEN) gates POST /api/v1/setup and the full
 	// GET /setup/status payload — the surfaces that provision (and describe)
@@ -286,12 +341,21 @@ func Init() error {
 		return fmt.Errorf("failed to load core setup token: %w", err)
 	}
 
-	// Caller-authentication config (see the var block for semantics). Optional
-	// here — the fail-closed decision for missing values is made where the
-	// listeners are built (cmd/server), because it depends on AppEnv.
-	AuthJWKSURL = GetEnvOrDefault("AUTH_JWKS_URL", "")
-	AuthIssuer = GetEnvOrDefault("AUTH_ISSUER", "")
-	AuthAudience = GetEnvOrDefault("AUTH_AUDIENCE", "")
+	// The two HARD DEPENDENCIES, auth and secret (see the var block). Read here,
+	// validated together below so one boot names every missing variable at once.
+	AuthJWKSURL = strings.TrimSpace(GetEnvOrDefault("AUTH_JWKS_URL", ""))
+	AuthIssuer = strings.TrimSpace(GetEnvOrDefault("AUTH_ISSUER", ""))
+	AuthAudience = strings.TrimSpace(GetEnvOrDefault("AUTH_AUDIENCE", ""))
+	AuthTokenURL = strings.TrimSpace(GetEnvOrDefault("AUTH_TOKEN_URL", ""))
+	SecretBaseURL = strings.TrimRight(strings.TrimSpace(GetEnvOrDefault("SECRET_BASE_URL", "")), "/")
+	SecretProject = strings.TrimSpace(GetEnvOrDefault("SECRET_PROJECT", "default"))
+	SecretEnvironment = strings.TrimSpace(GetEnvOrDefault("SECRET_ENVIRONMENT", "default"))
+	if DependencyProbeTimeout, err = time.ParseDuration(GetEnvOrDefault("DEPENDENCY_PROBE_TIMEOUT", "3s")); err != nil {
+		return fmt.Errorf("DEPENDENCY_PROBE_TIMEOUT is not a valid duration: %w", err)
+	}
+	if DependencyProbeTimeout <= 0 {
+		return fmt.Errorf("DEPENDENCY_PROBE_TIMEOUT must be positive (got %s)", DependencyProbeTimeout)
+	}
 
 	DeploymentMode = strings.ToLower(strings.TrimSpace(GetEnvOrDefault("DEPLOYMENT_MODE", "docker")))
 	if DeploymentMode != "docker" && DeploymentMode != "kubernetes" {
@@ -411,7 +475,11 @@ func Init() error {
 	// Logging
 	LogLevel = GetEnvOrDefault("LOG_LEVEL", "info")
 
-	return nil
+	// LAST, deliberately. Every check above is about ONE variable and names it;
+	// this one is about the install's dependency posture and names a whole set, so
+	// running it last keeps a plain typo (a missing DB_NAME) reported as a typo
+	// rather than buried behind the dependency error.
+	return validateDependencies()
 }
 
 type Config struct {

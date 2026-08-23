@@ -17,6 +17,7 @@ import (
 	sdkauth "github.com/maintainerd/sdk/auth"
 
 	"github.com/maintainerd/core/internal/app"
+	"github.com/maintainerd/core/internal/dependency"
 	"github.com/maintainerd/core/internal/grpcserver"
 	"github.com/maintainerd/core/internal/platform/authz"
 	"github.com/maintainerd/core/internal/platform/config"
@@ -97,6 +98,16 @@ func run(parent context.Context) error {
 		Verify: httpGuard.Verify,
 	})
 
+	// The dependency convergence loop, started before anything listens so the
+	// first /readyz already carries a reading.
+	//
+	// auth, core and secret start together, so "not listening yet" is the normal
+	// early state and core CONVERGES toward reachability rather than refusing to
+	// boot over it (internal/dependency). Configuration completeness was already
+	// enforced by config.Init, which is the part nothing can converge.
+	depend := dependency.New(dependencyProbes(application.SecretClient), dependency.Options{})
+	go depend.Run(ctx)
+
 	// When SETUP_ENABLED is set, Core drives Auth's gRPC setup on boot to
 	// provision the system tenant/admin and register itself as the control
 	// service, then records the credentials. Best-effort + retrying (Auth may
@@ -105,6 +116,21 @@ func run(parent context.Context) error {
 		slog.Info("startup: setup orchestration enabled — provisioning against auth in the background")
 		go application.SetupOrch.RunWithRetry(ctx)
 	}
+
+	// Secret's setup, on every boot and independent of SETUP_ENABLED.
+	//
+	// ORDERING IS ENFORCED INSIDE, not here: SecretOrchestrator holds the auth
+	// orchestrator as its gate and will not touch secret until core has RECORDED
+	// auth's setup complete. Sequencing it by starting this goroutine later would
+	// be sequencing by luck.
+	//
+	// It is started unconditionally because auth's setup and secret's are separate
+	// one-shots that complete on different boots: an instance whose auth was
+	// provisioned last week still needs this to converge if its secret never was.
+	// RunWithRetry no-ops when SECRET_SETUP_ADDR is unset (the standalone case) and
+	// returns as soon as GetSetupStatus reports secret already provisioned, so a
+	// steady-state boot costs one RPC.
+	go application.SecretSetupOrch.RunWithRetry(ctx)
 
 	// The post-setup control path, on EVERY boot regardless of SETUP_ENABLED.
 	// Once setup has issued Core its control identity, this converges the control
@@ -159,7 +185,10 @@ func run(parent context.Context) error {
 		AgentCertTTL:   config.AgentCertTTL,
 	})
 	g, gctx := errgroup.WithContext(ctx)
-	g.Go(func() error { return appserver.StartRESTServer(gctx, appserver.Router(application, httpGuard)) })
+	g.Go(func() error {
+		return appserver.StartRESTServer(gctx, appserver.Router(application, httpGuard,
+			readinessChecks(pool, depend, httpGuard, application.SecretClient, application.SecretSetupOrch)))
+	})
 	g.Go(func() error {
 		return grpcserver.Serve(gctx, grpcListenAddr(), gateway, grpcGuard, grpcserver.TLSOptions{
 			CertFile:          config.GRPCTLSCertFile,

@@ -20,6 +20,21 @@ type Config struct {
 	AuthClientCertFile string // AUTH_SETUP_CLIENT_CERT_FILE (only if auth requires mTLS)
 	AuthClientKeyFile  string // AUTH_SETUP_CLIENT_KEY_FILE
 
+	// Secret gRPC SetupService connection — the core→secret half of the SAME
+	// controlled-setup contract as the auth block above, so the variables are
+	// named the same way on purpose (see internal/setup/secret.go).
+	//
+	// SecretSetupToken is secret's SETUP_BOOTSTRAP_TOKEN, presented as
+	// x-setup-token. It is a CREDENTIAL: it is never logged and never appears in
+	// an error string. An empty SecretSetupAddr means core does not drive secret's
+	// setup at all, which is the development posture.
+	SecretSetupAddr           string // SECRET_SETUP_ADDR (host:port of secret's gRPC)
+	SecretSetupToken          string // SECRET_SETUP_BOOTSTRAP_TOKEN (sent as x-setup-token)
+	SecretSetupCAFile         string // SECRET_SETUP_CA_FILE (optional; empty+no client cert = plaintext)
+	SecretSetupServerName     string // SECRET_SETUP_SERVER_NAME (TLS SNI; must match secret's gRPC cert SAN)
+	SecretSetupClientCertFile string // SECRET_SETUP_CLIENT_CERT_FILE (only if secret requires mTLS)
+	SecretSetupClientKeyFile  string // SECRET_SETUP_CLIENT_KEY_FILE
+
 	// The system tenant + admin to provision in Auth.
 	TenantName        string // SETUP_TENANT_NAME
 	TenantDisplayName string // SETUP_TENANT_DISPLAY_NAME
@@ -33,6 +48,14 @@ type Config struct {
 	CoreAudience        string   // CORE_API_AUDIENCE (the API identifier tokens are minted for)
 	ConsoleDomain       string   // CORE_CONSOLE_DOMAIN
 	ConsoleRedirectURIs []string // CORE_CONSOLE_REDIRECT_URIS (comma-separated)
+
+	// The default vault scope core provisions in secret and writes credentials
+	// into. Read here as well as in internal/platform/config — one variable, one
+	// value, two readers, the DEPLOYMENT_MODE precedent. The scope core CREATES in
+	// secret and the scope core WRITES to must be the same one, so they have to
+	// come from the same variable rather than from two that can drift.
+	SecretProject     string // SECRET_PROJECT
+	SecretEnvironment string // SECRET_ENVIRONMENT
 
 	// Endpoints recorded in Core's service registry for the system services.
 	AuthEndpoint   string // = AuthAddr
@@ -93,6 +116,13 @@ func LoadConfig() Config {
 		AuthClientCertFile: env("AUTH_SETUP_CLIENT_CERT_FILE", ""),
 		AuthClientKeyFile:  env("AUTH_SETUP_CLIENT_KEY_FILE", ""),
 
+		SecretSetupAddr:           env("SECRET_SETUP_ADDR", ""),
+		SecretSetupToken:          env("SECRET_SETUP_BOOTSTRAP_TOKEN", ""),
+		SecretSetupCAFile:         env("SECRET_SETUP_CA_FILE", ""),
+		SecretSetupServerName:     env("SECRET_SETUP_SERVER_NAME", ""),
+		SecretSetupClientCertFile: env("SECRET_SETUP_CLIENT_CERT_FILE", ""),
+		SecretSetupClientKeyFile:  env("SECRET_SETUP_CLIENT_KEY_FILE", ""),
+
 		TenantName:        env("SETUP_TENANT_NAME", "maintainerd"),
 		TenantDisplayName: env("SETUP_TENANT_DISPLAY_NAME", "Maintainerd"),
 		AdminUsername:     env("SETUP_ADMIN_USERNAME", "admin"),
@@ -106,6 +136,11 @@ func LoadConfig() Config {
 		CoreAudience:        env("CORE_API_AUDIENCE", "https://core.maintainerd.local"),
 		ConsoleDomain:       consoleDomain,
 		ConsoleRedirectURIs: envList("CORE_CONSOLE_REDIRECT_URIS", "https://"+consoleDomain+"/auth/callback"),
+
+		// The defaults match the scope maintainerd-secret autocreates on a fresh
+		// install, so a stock pair of services works with neither variable set.
+		SecretProject:     env("SECRET_PROJECT", "default"),
+		SecretEnvironment: env("SECRET_ENVIRONMENT", "default"),
 
 		AuthEndpoint:      authAddr,
 		SecretEndpoint:    env("SECRET_ENDPOINT", ""),

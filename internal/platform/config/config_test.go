@@ -27,6 +27,14 @@ func TestInit(t *testing.T) {
 		t.Setenv("DB_USER", "postgres")
 		t.Setenv("DB_PASSWORD", "pass")
 		t.Setenv("DB_NAME", "authdb")
+		// The two hard dependencies. Required outside development, so a
+		// production-posture Init (APP_ENV defaults to production) needs them —
+		// see TestValidateDependencies for the gate itself.
+		t.Setenv("AUTH_JWKS_URL", "https://auth.example.com/.well-known/jwks.json")
+		t.Setenv("AUTH_ISSUER", "https://auth.example.com")
+		t.Setenv("AUTH_AUDIENCE", "https://core.example.com")
+		t.Setenv("AUTH_TOKEN_URL", "https://auth.example.com/oauth/token")
+		t.Setenv("SECRET_BASE_URL", "https://secret.example.com")
 	}
 
 	saveGlobals := func(t *testing.T) {
@@ -50,7 +58,19 @@ func TestInit(t *testing.T) {
 		origDBSSL := DBSSLMode
 		origEncKey := AppEncryptionKey
 		origHMACKey := HMACSecretKey
+		origAuthJWKS := AuthJWKSURL
+		origAuthIssuer := AuthIssuer
+		origAuthAudience := AuthAudience
+		origAuthTokenURL := AuthTokenURL
+		origSecretBaseURL := SecretBaseURL
+		origProbeTimeout := DependencyProbeTimeout
 		t.Cleanup(func() {
+			AuthJWKSURL = origAuthJWKS
+			AuthIssuer = origAuthIssuer
+			AuthAudience = origAuthAudience
+			AuthTokenURL = origAuthTokenURL
+			SecretBaseURL = origSecretBaseURL
+			DependencyProbeTimeout = origProbeTimeout
 			activeSecretManager = origSM
 			SecretProvider = origProvider
 			SecretPrefix = origPrefix

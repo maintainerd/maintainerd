@@ -58,15 +58,30 @@ type RenderInput struct {
 }
 
 type Rendered struct {
-	Template Template                `json:"template"`
+	Template Template `json:"template"`
+	// Params are the RESOLVED parameters, and for a `secret`-typed one that is
+	// the vault reference, never the value — vaultSecrets substitutes before this
+	// struct exists. Rendered is returned over HTTP and logged, so this field
+	// holding a plaintext would leak one every render.
 	Params   map[string]any          `json:"params"`
 	Spec     kitruntime.WorkloadSpec `json:"spec"`
 	SpecHash string                  `json:"spec_hash"`
 }
 
-type Service struct{ q Repository }
+type Service struct {
+	q Repository
+	// credentials is where `secret`-typed parameters are written. A nil sink
+	// makes a template that declares one unrenderable rather than rendering it
+	// with the value inline — see vaultSecrets.
+	credentials CredentialSink
+}
 
-func NewService(q Repository) *Service { return &Service{q: q} }
+// NewService takes the sink explicitly — there is no convenience constructor
+// that defaults it to nil — so a caller cannot wire a template service that
+// silently has nowhere to put a credential.
+func NewService(q Repository, credentials CredentialSink) *Service {
+	return &Service{q: q, credentials: credentials}
+}
 
 func (s *Service) Create(ctx context.Context, in CreateInput) (*Template, error) {
 	if strings.TrimSpace(in.Name) == "" || strings.TrimSpace(in.Image) == "" {
@@ -124,6 +139,12 @@ func (s *Service) Render(ctx context.Context, in RenderInput) (*Rendered, error)
 	if err != nil {
 		return nil, apperror.NewValidation(err.Error())
 	}
+	// BEFORE rendering, and fail-closed: every secret-typed parameter is written
+	// to the vault and replaced by its reference here, so the template below can
+	// only ever see references. A vault that is unreachable ends the provision.
+	if err := s.vaultSecrets(ctx, tpl, params); err != nil {
+		return nil, err
+	}
 	rendered, err := renderAny(tpl.Spec, params)
 	if err != nil {
 		return nil, apperror.NewValidation(err.Error())
@@ -169,12 +190,21 @@ func resolveParams(defs []Parameter, supplied map[string]any) (map[string]any, e
 		if p.Name == "" {
 			return nil, fmt.Errorf("parameter name is required")
 		}
+		if p.Type == "secret" {
+			// Resolved by vaultSecrets instead, which owns generation, the required
+			// check and the vault write. It must not be defaulted or coerced here:
+			// this loop's job is to produce a value for the spec template, and a
+			// secret-typed parameter's value must never reach it.
+			//
+			// This branch used to substitute the parameter NAME for a generated
+			// secret, so `generate: true` generated nothing and the spec carried
+			// secret://<param> — a reference to an address holding no secret.
+			continue
+		}
 		v, ok := out[p.Name]
 		if !ok || v == nil || v == "" {
 			if p.Default != nil {
 				v = p.Default
-			} else if p.Generate && p.Type == "secret" {
-				v = p.Name
 			} else if p.Required {
 				return nil, fmt.Errorf("parameter %q is required", p.Name)
 			} else {
@@ -269,7 +299,7 @@ func renderString(s string, params map[string]any) (any, error) {
 	}
 	tpl, err := template.New("spec").
 		Option("missingkey=error").
-		Funcs(template.FuncMap{"secretRef": func(v any) string { return "secret://" + fmt.Sprint(v) }}).
+		Funcs(template.FuncMap{"secretRef": secretRefFunc}).
 		Parse(s)
 	if err != nil {
 		return nil, err
@@ -279,6 +309,24 @@ func renderString(s string, params map[string]any) (any, error) {
 		return nil, err
 	}
 	return buf.String(), nil
+}
+
+// secretRefPrefix is the scheme a workload spec carries in place of a credential.
+const secretRefPrefix = "secret://"
+
+// secretRefFunc is the `secretRef` template helper, and it is IDEMPOTENT.
+//
+// vaultSecrets already substitutes a full secret:// reference for every
+// secret-typed parameter, so a template that also wraps it — the natural thing
+// to write, and what the existing templates do — must not produce
+// secret://secret://…. Applying the prefix only when it is absent keeps both
+// spellings correct.
+func secretRefFunc(v any) string {
+	s := fmt.Sprint(v)
+	if strings.HasPrefix(s, secretRefPrefix) {
+		return s
+	}
+	return secretRefPrefix + s
 }
 
 func exactParamTemplate(s string) (string, bool) {

@@ -72,7 +72,8 @@ func TestRenderTemplateToWorkloadSpec(t *testing.T) {
 		Metadata:     []byte(`{}`),
 	}}
 
-	rendered, err := NewService(repo).Render(context.Background(), RenderInput{
+	sink := &fakeSink{}
+	rendered, err := NewService(repo, sink).Render(context.Background(), RenderInput{
 		Name:   "web",
 		Params: map[string]any{"name": "frontend"},
 	})
@@ -81,7 +82,13 @@ func TestRenderTemplateToWorkloadSpec(t *testing.T) {
 	assert.Equal(t, "frontend", rendered.Spec.Name)
 	require.Len(t, rendered.Spec.Ports, 1)
 	assert.Equal(t, 8080, rendered.Spec.Ports[0].HostPort)
-	assert.Equal(t, "secret://password", rendered.Spec.Env["PASSWORD"])
+	// The generated credential went to the vault and the spec carries only the
+	// reference the sink returned. It used to carry "secret://password" — the
+	// parameter NAME — for a value nothing had generated and nothing had stored.
+	assert.Equal(t, "secret://vault/web/password", rendered.Spec.Env["PASSWORD"])
+	require.Len(t, sink.stored, 1)
+	assert.NotEmpty(t, sink.stored["web/password"])
+	assert.NotEqual(t, "password", string(sink.stored["web/password"]))
 	assert.NotEmpty(t, rendered.SpecHash)
 }
 
@@ -99,11 +106,11 @@ func TestRenderRequiresParametersAndValidatesSpec(t *testing.T) {
 		Metadata:     []byte(`{}`),
 	}}
 
-	_, err = NewService(repo).Render(context.Background(), RenderInput{Name: "bad"})
+	_, err = NewService(repo, &fakeSink{}).Render(context.Background(), RenderInput{Name: "bad"})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "parameter")
 
-	_, err = NewService(repo).Render(context.Background(), RenderInput{Name: "bad", Params: map[string]any{"name": "app"}})
+	_, err = NewService(repo, &fakeSink{}).Render(context.Background(), RenderInput{Name: "bad", Params: map[string]any{"name": "app"}})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "image")
 }

@@ -6,13 +6,10 @@ package setup
 
 import (
 	"context"
-	"crypto/tls"
-	"crypto/x509"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
-	"os"
 	"sync"
 	"time"
 
@@ -20,8 +17,6 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials"
-	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/metadata"
 
 	authv1 "github.com/maintainerd/core/gen/maintainerd/auth/v1"
@@ -31,9 +26,6 @@ import (
 	"github.com/maintainerd/core/internal/storage"
 	"github.com/maintainerd/core/internal/tenant"
 )
-
-// setupTokenKey is the gRPC metadata header Auth reads the bootstrap token from.
-const setupTokenKey = "x-setup-token"
 
 // ErrSetupRunning is returned when a provisioning run is already in flight —
 // the single-flight guard that keeps the boot goroutine (RunWithRetry) and the
@@ -117,33 +109,15 @@ type Result struct {
 	DeploymentMode string `json:"deployment_mode,omitempty"`
 }
 
-func (o *Orchestrator) dial(ctx context.Context) (*grpc.ClientConn, error) {
-	// Plaintext only when no TLS material is configured at all.
-	if o.cfg.AuthCAFile == "" && o.cfg.AuthClientCertFile == "" {
-		return grpc.NewClient(o.cfg.AuthAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))
-	}
-
-	tlsCfg := &tls.Config{ServerName: o.cfg.AuthServerName}
-	if o.cfg.AuthCAFile != "" {
-		caPEM, err := os.ReadFile(o.cfg.AuthCAFile)
-		if err != nil {
-			return nil, fmt.Errorf("read auth CA: %w", err)
-		}
-		pool := x509.NewCertPool()
-		if !pool.AppendCertsFromPEM(caPEM) {
-			return nil, fmt.Errorf("auth CA file %q holds no valid certificate", o.cfg.AuthCAFile)
-		}
-		tlsCfg.RootCAs = pool
-	}
-	// Present a client cert when Auth's gRPC requires mTLS (control-plane mode).
-	if o.cfg.AuthClientCertFile != "" && o.cfg.AuthClientKeyFile != "" {
-		cert, err := tls.LoadX509KeyPair(o.cfg.AuthClientCertFile, o.cfg.AuthClientKeyFile)
-		if err != nil {
-			return nil, fmt.Errorf("load auth client cert: %w", err)
-		}
-		tlsCfg.Certificates = []tls.Certificate{cert}
-	}
-	return grpc.NewClient(o.cfg.AuthAddr, grpc.WithTransportCredentials(credentials.NewTLS(tlsCfg)))
+func (o *Orchestrator) dial(context.Context) (*grpc.ClientConn, error) {
+	return dialSetupService(setupDial{
+		Service:        "auth",
+		Addr:           o.cfg.AuthAddr,
+		CAFile:         o.cfg.AuthCAFile,
+		ServerName:     o.cfg.AuthServerName,
+		ClientCertFile: o.cfg.AuthClientCertFile,
+		ClientKeyFile:  o.cfg.AuthClientKeyFile,
+	})
 }
 
 // authCtx attaches the bootstrap token Auth's setup interceptor expects.

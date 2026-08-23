@@ -146,6 +146,14 @@ func TestInitControlPlaneDefaults(t *testing.T) {
 		t.Setenv("DB_USER", "postgres")
 		t.Setenv("DB_PASSWORD", "pass")
 		t.Setenv("DB_NAME", "authdb")
+		// Auth + secret are hard dependencies outside development; Init refuses
+		// without them (see validateDependencies), which would mask what this test
+		// is actually about.
+		t.Setenv("AUTH_JWKS_URL", "https://auth.example.com/.well-known/jwks.json")
+		t.Setenv("AUTH_ISSUER", "https://auth.example.com")
+		t.Setenv("AUTH_AUDIENCE", "https://core.example.com")
+		t.Setenv("AUTH_TOKEN_URL", "https://auth.example.com/oauth/token")
+		t.Setenv("SECRET_BASE_URL", "https://secret.example.com")
 	}
 
 	saveControlPlaneGlobals := func(t *testing.T) {
