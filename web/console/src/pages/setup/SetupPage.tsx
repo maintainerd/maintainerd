@@ -1,3 +1,4 @@
+import { useState } from 'react'
 import { useForm } from 'react-hook-form'
 import { useNavigate } from 'react-router-dom'
 import { BrandLogo } from '@/components/brand/BrandMark'
@@ -24,11 +25,22 @@ interface FormValues {
  * orchestration (Core drives Auth's gRPC setup, registers itself as the control
  * service, and seeds the service registry) — everything is configured from here.
  *
- * IT ALSO COLLECTS THE BOOTSTRAP TOKEN. The endpoint it posts to is the one route
- * core's bearer guard cannot cover — it provisions the Auth that would mint the
- * bearer — so it carries its own shared-secret gate, core's `CORE_SETUP_TOKEN`.
- * The operator sets that on core and types the same value here, which is the
- * pattern maintainerd-auth and maintainerd-secret already use for their wizards.
+ * NO TOKEN FIELD IS SHOWN UNTIL THE SERVER ASKS FOR ONE, and that is the whole
+ * design of this screen.
+ *
+ * Core is the STARTING POINT of an install: at first boot there is no auth, no
+ * tenant, no admin, and nowhere a credential could have come from. So the common
+ * case — the only case a first-time operator ever sees — has no token, and putting
+ * a field on screen that says "leave this empty" asks them for something they do
+ * not have and cannot get. It reads as a blocked door on the first screen of the
+ * product.
+ *
+ * The endpoint does carry its own shared-secret gate (`CORE_SETUP_TOKEN`), because
+ * it is the one route core's bearer guard cannot cover — it provisions the Auth
+ * that would mint the bearer. But that gate is only CLOSED when an operator
+ * deliberately set a token, which means they already know they have one. So the
+ * field appears when the gate refuses, with the reason: the moment it is needed is
+ * exactly the moment the server says so.
  *
  * THE TOKEN LIVES AND DIES WITH THIS FORM. It is form state handed straight to the
  * request as a header — never storage, never a URL, never a log — and this
@@ -40,6 +52,11 @@ export default function SetupPage() {
   const navigate = useNavigate()
   const run = useRunSetup()
   const { showSuccess, showError } = useToast()
+
+  // Revealed only when core's gate refuses the call. It never goes back to false:
+  // once the operator knows a token is required, hiding the field again on the
+  // next error would lose what they typed.
+  const [tokenRequired, setTokenRequired] = useState(false)
 
   const {
     register,
@@ -85,6 +102,10 @@ export default function SetupPage() {
       // with the console and gives no indication that the one field the operator
       // can act on is the one that is wrong.
       if (isSetupTokenRejected(e)) {
+        // Reveal the field and explain, in one step. A 401 here is unambiguous:
+        // this surface holds no bearer of its own to expire, so the setup token is
+        // the only credential it accepts.
+        setTokenRequired(true)
         setError('setup_token', { type: 'server', message: SETUP_TOKEN_REJECTED_MESSAGE })
         return
       }
@@ -110,36 +131,30 @@ export default function SetupPage() {
         </div>
 
         <form onSubmit={handleSubmit(onSubmit)} className="space-y-4">
-          {/* OPTIONAL, AND THAT IS THE WHOLE POINT.
-
-              Core is the starting point of an install: at first boot nothing
-              exists — no auth, no tenant, no admin — so there is nowhere a
-              credential could have come from. Requiring one here would lock the
-              front door with the key inside.
-
-              Core's gate matches that: an empty CORE_SETUP_TOKEN leaves the
-              surface open in development, and DISABLES the trigger outside it, so
-              an internet-reachable core is fail-closed rather than anonymous. The
-              field exists for the operator who did set a token — either to harden
-              a local stack, or because they are re-driving setup on a deployed
-              instance — and it must never block the common first run. */}
-          <Card>
-            <CardHeader>
-              <CardTitle className="text-base font-semibold">Authorize this install</CardTitle>
-            </CardHeader>
-            <CardContent className="space-y-5">
-              {/* FormPasswordField, not FormInputField: it masks the value and
-                  defaults autoComplete to "new-password", so no password manager
-                  offers to remember a provisioning credential. */}
-              <FormPasswordField
-                label="Setup token"
-                spellCheck={false}
-                description="Only if core was started with CORE_SETUP_TOKEN. Leave this empty otherwise — a fresh install has no token. It authorizes this one call and is never stored by the console."
-                error={errors.setup_token?.message}
-                {...register('setup_token')}
-              />
-            </CardContent>
-          </Card>
+          {/* Absent until the gate refuses — see the component doc. A fresh
+              install has no token, so asking for one up front puts a blocked door
+              on the first screen of the product. */}
+          {tokenRequired && (
+            <Card>
+              <CardHeader>
+                <CardTitle className="text-base font-semibold">Authorize this install</CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-5">
+                {/* FormPasswordField, not FormInputField: it masks the value and
+                    defaults autoComplete to "new-password", so no password manager
+                    offers to remember a provisioning credential. */}
+                <FormPasswordField
+                  label="Setup token"
+                  required
+                  autoFocus
+                  spellCheck={false}
+                  description="This core was started with CORE_SETUP_TOKEN, so it will not provision without it. Enter that value — it authorizes this one call and is never stored by the console."
+                  error={errors.setup_token?.message}
+                  {...register('setup_token', { required: 'The setup token is required' })}
+                />
+              </CardContent>
+            </Card>
+          )}
 
           <Card>
             <CardHeader>
