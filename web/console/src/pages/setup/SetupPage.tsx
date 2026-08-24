@@ -64,7 +64,10 @@ export default function SetupPage() {
   const onSubmit = async (v: FormValues) => {
     try {
       await run.mutateAsync({
-        setupToken: v.setup_token,
+        // An untouched field is "", which must mean "no token" rather than "an
+        // empty token" — the gate compares in constant time and would read the
+        // latter as a refusal instead of an unauthenticated first run.
+        setupToken: v.setup_token || undefined,
         body: {
           tenant_name: v.tenant_name,
           tenant_display_name: v.tenant_display_name || undefined,
@@ -107,6 +110,19 @@ export default function SetupPage() {
         </div>
 
         <form onSubmit={handleSubmit(onSubmit)} className="space-y-4">
+          {/* OPTIONAL, AND THAT IS THE WHOLE POINT.
+
+              Core is the starting point of an install: at first boot nothing
+              exists — no auth, no tenant, no admin — so there is nowhere a
+              credential could have come from. Requiring one here would lock the
+              front door with the key inside.
+
+              Core's gate matches that: an empty CORE_SETUP_TOKEN leaves the
+              surface open in development, and DISABLES the trigger outside it, so
+              an internet-reachable core is fail-closed rather than anonymous. The
+              field exists for the operator who did set a token — either to harden
+              a local stack, or because they are re-driving setup on a deployed
+              instance — and it must never block the common first run. */}
           <Card>
             <CardHeader>
               <CardTitle className="text-base font-semibold">Authorize this install</CardTitle>
@@ -117,11 +133,10 @@ export default function SetupPage() {
                   offers to remember a provisioning credential. */}
               <FormPasswordField
                 label="Setup token"
-                required
                 spellCheck={false}
-                description="Core's CORE_SETUP_TOKEN. It authorizes this one call and is not stored anywhere by the console."
+                description="Only if core was started with CORE_SETUP_TOKEN. Leave this empty otherwise — a fresh install has no token. It authorizes this one call and is never stored by the console."
                 error={errors.setup_token?.message}
-                {...register('setup_token', { required: 'The setup token is required' })}
+                {...register('setup_token')}
               />
             </CardContent>
           </Card>

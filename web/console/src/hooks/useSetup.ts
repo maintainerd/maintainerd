@@ -36,7 +36,9 @@ export function useSetupStatus() {
 export function useRunSetup() {
   const qc = useQueryClient()
   return useMutation({
-    mutationFn: (input: { body: RunSetupRequest; setupToken: string }) =>
+    // OPTIONAL: a fresh install has no token to give — core is the starting
+    // point, so nothing has issued one yet. See runSetup for the full argument.
+    mutationFn: (input: { body: RunSetupRequest; setupToken?: string }) =>
       runSetup(input.body, input.setupToken),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: setupKeys.status })

@@ -37,10 +37,24 @@ export function getSetupStatus(setupToken?: string): Promise<SetupStatus> {
   }).then((r) => unwrap(r, 'fetch setup status'))
 }
 
-/** Runs the full provisioning. The token is REQUIRED — the gate refuses without it. */
-export function runSetup(data: RunSetupRequest, setupToken: string): Promise<SetupResult> {
+/**
+ * Runs the full provisioning.
+ *
+ * THE TOKEN IS OPTIONAL, and the header is omitted entirely when absent — the
+ * same rule as the status read, for a stronger reason. Core is the STARTING POINT
+ * of an install: at first boot there is no auth, no tenant and no admin, so there
+ * is nowhere a credential could have come from. A fresh install therefore has no
+ * token to send, and core's gate is built for exactly that — an empty
+ * CORE_SETUP_TOKEN leaves the surface open in development and DISABLES the
+ * trigger outside it, so the deployed case is fail-closed rather than anonymous.
+ *
+ * Sending an empty header instead of omitting it would be worse than useless: the
+ * gate compares in constant time and treats "" as no credential, so it would read
+ * as a refused token rather than as an unauthenticated first run.
+ */
+export function runSetup(data: RunSetupRequest, setupToken?: string): Promise<SetupResult> {
   return post<ApiResponse<SetupResult>>(base, data, {
-    headers: { [SETUP_TOKEN_HEADER]: setupToken },
+    headers: setupToken ? { [SETUP_TOKEN_HEADER]: setupToken } : undefined,
     skipSessionRecovery: true,
   }).then((r) => unwrap(r, 'run setup'))
 }

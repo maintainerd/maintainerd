@@ -88,6 +88,25 @@ describe('the setup token', () => {
     expect(config?.headers).toBeUndefined()
   })
 
+  // THE REGRESSION THIS FILE EXISTS TO PREVENT, and the reason the token is
+  // optional at all.
+  //
+  // Core is the STARTING POINT of an install: at first boot there is no auth, no
+  // tenant and no admin, so there is nowhere a credential could have come from. A
+  // fresh install has no token to send, and requiring one turned first-run into a
+  // 401 on the single endpoint that has to answer before anything else works.
+  //
+  // Omitting the header is not the same as sending an empty one: the gate compares
+  // in constant time and treats "" as no credential, so an empty header would read
+  // as a REFUSED token rather than an unauthenticated first run — the difference
+  // between "you typed the wrong thing" and "you did not need to type anything".
+  it('is omitted from the provisioning call when a fresh install has none', async () => {
+    await runSetup(body)
+
+    const [, , config] = mockPost.mock.calls[0]
+    expect(config?.headers).toBeUndefined()
+  })
+
   // Both calls opt out of session recovery: this surface holds no bearer of its
   // own, so its 401 must not clear one or navigate away from the wizard.
   it('opts both calls out of session recovery', async () => {
