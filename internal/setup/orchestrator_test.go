@@ -31,12 +31,25 @@ func (f *fakeControlPlaneStore) GetControlPlane(context.Context) (storage.Contro
 
 func (f *fakeControlPlaneStore) UpsertControlPlane(_ context.Context, arg storage.UpsertControlPlaneParams) (storage.ControlPlane, error) {
 	f.upserts = append(f.upserts, arg)
+
+	// MODELS THE REAL QUERY, not a naive assignment. control_plane.sql resolves the
+	// key with COALESCE(NULLIF(EXCLUDED…, ''), existing): an empty incoming key
+	// means "leave it alone", because blanking it would leave auth verifying
+	// private_key_jwt against a public key whose private half no longer exists.
+	// A fake that assigned blindly would let a key-blanking regression pass here
+	// and only fail in a deployed install, which is the whole class of bug this
+	// fake exists to catch.
+	key := arg.ControlPrivateKeyPem
+	if key == "" {
+		key = f.row.ControlPrivateKeyPem
+	}
+
 	f.has = true
 	f.row = storage.ControlPlane{
 		ID:                   1,
 		AuthTenantUuid:       arg.AuthTenantUuid,
 		Data:                 arg.Data,
-		ControlPrivateKeyPem: arg.ControlPrivateKeyPem,
+		ControlPrivateKeyPem: key,
 		DeploymentMode:       arg.DeploymentMode,
 		SetupCompletedAt:     arg.SetupCompletedAt,
 	}
@@ -138,4 +151,61 @@ func TestRunWithRetryStopsOnCancel(t *testing.T) {
 
 func TestErrSetupRunningIsSentinel(t *testing.T) {
 	assert.True(t, errors.Is(ErrSetupRunning, ErrSetupRunning))
+}
+
+// TestPersistRecordsCompletionWithoutTouchingTheControlKey covers the write that
+// unsticks the already-provisioned path, and the hazard it introduced.
+//
+// THE TRAP IT FIXES. Auth's setup lock is one-shot and durable, so once auth
+// reports complete every later boot takes the already-provisioned branch. That
+// branch used to return WITHOUT persisting, so an install whose auth database
+// survived while core's was reset — they are separate volumes — never stamped
+// setup_completed_at of its own. /setup/status answered {"completed": false}
+// forever, the console pinned the operator to the wizard with no route to the
+// dashboard, and re-running the wizard could not help because it lands on the same
+// branch.
+//
+// THE HAZARD. Recording completion means calling persist with no private key in
+// hand: that path deliberately does not regenerate one, because auth holds the
+// matching JWKS. So persist must record the timestamp and leave the stored key
+// exactly as it was. Blanking it would refuse every control-plane call
+// permanently, which is strictly worse than the stuck wizard.
+func TestPersistRecordsCompletionWithoutTouchingTheControlKey(t *testing.T) {
+	const stored = "-----BEGIN PRIVATE KEY-----stored-----END PRIVATE KEY-----"
+	cp := &fakeControlPlaneStore{
+		has: true,
+		row: storage.ControlPlane{ID: 1, ControlPrivateKeyPem: stored},
+	}
+	o := newTestOrchestrator(cp, Config{})
+
+	completedAt := time.Now()
+	res := &Result{AlreadyComplete: true, CompletedAt: completedAt}
+
+	if err := o.persist(context.Background(), res, ""); err != nil {
+		t.Fatalf("persist: %v", err)
+	}
+
+	if !cp.row.SetupCompletedAt.Valid {
+		t.Fatal("setup_completed_at was not recorded — the wizard stays on screen forever")
+	}
+	if cp.row.ControlPrivateKeyPem != stored {
+		t.Fatalf("the stored control key was overwritten: got %q, want it untouched", cp.row.ControlPrivateKeyPem)
+	}
+}
+
+// TestPersistStoresAFreshKeyOnFirstRun is the other half: the empty-means-preserve
+// rule must not stop a genuine first run from writing its newly minted key.
+func TestPersistStoresAFreshKeyOnFirstRun(t *testing.T) {
+	const minted = "-----BEGIN PRIVATE KEY-----minted-----END PRIVATE KEY-----"
+	cp := &fakeControlPlaneStore{}
+	o := newTestOrchestrator(cp, Config{})
+
+	res := &Result{CompletedAt: time.Now()}
+	if err := o.persist(context.Background(), res, minted); err != nil {
+		t.Fatalf("persist: %v", err)
+	}
+
+	if cp.row.ControlPrivateKeyPem != minted {
+		t.Fatalf("first run did not store its control key: got %q, want %q", cp.row.ControlPrivateKeyPem, minted)
+	}
 }

@@ -125,6 +125,22 @@ function readIdentityConfig(): IdentityConfig | null {
 
 export const IDENTITY_CONFIG: IdentityConfig | null = readIdentityConfig()
 
+/**
+ * The `host:port` an agent dials core on, or `''` when this deployment has not
+ * declared it.
+ *
+ * NOT DERIVABLE FROM THE API BASE URL. `BASE_URL` addresses core's HTTP listener
+ * (`HTTP_PORT`) and is usually a same-origin path behind a proxy; an agent dials
+ * core's gRPC listener (`GRPC_PORT`) directly, on a host the browser may never
+ * talk to. Guessing a port here would put a plausible-but-wrong `CORE_ADDR` in
+ * an install snippet, and the failure surfaces on the host as a dial timeout far
+ * from the console.
+ *
+ * Empty is therefore a supported state: the join-token screen asks the operator
+ * for the value instead of inventing one.
+ */
+export const CORE_GRPC_ADDR = setting('CORE_GRPC_ADDR', 'VITE_CORE_GRPC_ADDR')
+
 export const API_CONFIG = {
   BASE_URL: getBaseUrl(),
   TIMEOUT: 30000, // 30 seconds

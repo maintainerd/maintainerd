@@ -187,6 +187,20 @@ type Querier interface {
 	UpdateResourceStatus(ctx context.Context, arg UpdateResourceStatusParams) (Resource, error)
 	UpdateServiceStatus(ctx context.Context, arg UpdateServiceStatusParams) (Service, error)
 	UpdateTenant(ctx context.Context, arg UpdateTenantParams) (Tenant, error)
+	//
+	// AN EMPTY control_private_key_pem MEANS "LEAVE IT ALONE", never "erase it".
+	//
+	// The control key is core's private_key_jwt signing key, and auth holds the
+	// matching JWKS. Overwriting it with '' would leave auth verifying against a
+	// public key whose private half no longer exists — every control-plane call
+	// refused, permanently, with no way to re-mint without re-registering in auth.
+	// Orchestrator.controlKey already refuses to regenerate over a stored key for
+	// that reason; this is the same rule enforced at the write instead of trusting
+	// every caller to pass the key back. A caller that only means to record setup
+	// completion has no business carrying a private key around to do it.
+	//
+	// setup_completed_at is NOT given the same treatment: it is written once with a
+	// real timestamp and there is no path that legitimately clears it.
 	UpsertControlPlane(ctx context.Context, arg UpsertControlPlaneParams) (ControlPlane, error)
 }
 

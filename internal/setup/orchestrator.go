@@ -196,6 +196,38 @@ func (o *Orchestrator) RunWith(ctx context.Context, in RunInput) (*Result, error
 		if err := o.mirror(ctx, res, tenantName, tenantDisplay); err != nil {
 			slog.Warn("core setup: mirror after already-complete failed", "err", err)
 		}
+
+		// RECORD COMPLETION, or this branch is a permanent trap.
+		//
+		// Auth's setup lock is one-shot and durable, so once it reports complete it
+		// will report complete forever — this path is taken on every subsequent
+		// boot. But it used to return WITHOUT persisting, so if core reached here
+		// with no setup_completed_at of its own (auth's database survived while
+		// core's was reset — they are separate volumes, and `clean` on one is not
+		// clean on the other), core re-entered this branch every boot, never
+		// stamped completion, and /setup/status answered {"completed": false}
+		// forever. The console then pinned the operator to the wizard with no route
+		// to the dashboard, and re-running the wizard could not help: it lands
+		// here again.
+		//
+		// Auth reporting complete IS the authority on whether setup happened, so
+		// core records it. Only the timestamp is filled in when missing; a run that
+		// already had one keeps it, so this cannot rewrite an install's history.
+		if res.CompletedAt.IsZero() {
+			res.CompletedAt = time.Now()
+			// privPEM is empty here: the control key is NOT regenerated on this path
+			// (controlKey refuses to overwrite a stored one, and auth holds the
+			// matching JWKS), so persist must leave whatever is already stored
+			// untouched rather than blanking it.
+			if err := o.persist(ctx, res, ""); err != nil {
+				// Non-fatal: the install is functional, and failing here would take
+				// core down over a bookkeeping write. But it does mean the trap is
+				// still armed, so say exactly that.
+				slog.Error("core setup: auth is provisioned but core could not record completion — "+
+					"the console will keep showing the setup wizard until this write succeeds",
+					"err", err)
+			}
+		}
 		return res, nil
 	}
 
