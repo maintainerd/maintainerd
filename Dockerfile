@@ -38,7 +38,7 @@ RUN npm run build
 # Build on the native BUILDPLATFORM and cross-compile via GOOS/GOARCH so multi-arch
 # builds never run this stage under QEMU emulation. The `embedassets` build tag
 # turns on the go:embed of the two dist trees copied in below.
-FROM --platform=$BUILDPLATFORM golang:1.26-alpine@sha256:0178a641fbb4858c5f1b48e34bdaabe0350a330a1b1149aabd498d0699ff5fb2 AS backend
+FROM --platform=$BUILDPLATFORM golang:1.27-alpine@sha256:26402d86be3d72e6a9410afa0108f03529f51f0c1b5eb7f503d0bc44cc7857ac AS backend
 ENV GOTOOLCHAIN=auto
 
 RUN apk add --no-cache git ca-certificates
